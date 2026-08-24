@@ -2,6 +2,7 @@
 /**
  * EVG Module: Quality Control (Pro Edition)
  * Step 5 of the Grading Process: Final verification, sub-score cross-check, defect gallery audit, and encapsulation approval.
+ * Pagination configured to 5 items per page.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -24,12 +25,12 @@ function evg_quality_control_tab() {
     // ---------------------------------------------------------
     // Handle Form Submissions (QC Approval & Reject Routing)
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_qc_action_nonce'] ) ) {
-        if ( wp_verify_nonce( $_POST['evg_qc_action_nonce'], 'evg_qc_action' ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_qc_action_nonce'] ) ) {
+        if ( wp_verify_nonce( sanitize_key( $_POST['evg_qc_action_nonce'] ), 'evg_qc_action' ) ) {
             
-            $card_id        = intval( $_POST['card_id'] );
-            $submission_id  = intval( $_POST['submission_id'] );
-            $qc_action      = sanitize_key( $_POST['qc_action'] );
+            $card_id        = absint( $_POST['card_id'] ?? 0 );
+            $submission_id  = absint( $_POST['submission_id'] ?? 0 );
+            $qc_action      = sanitize_key( $_POST['qc_action'] ?? '' );
             $publish_report = isset( $_POST['transparency_published'] ) ? 1 : 0;
 
             if ( 'approve' === $qc_action ) {
@@ -56,8 +57,18 @@ function evg_quality_control_tab() {
                     );
                 }
 
-                Elite_Vault_Grading_System::log_activity( "QC Approved for Card ID {$card_id}. Dispatched to Encapsulation." );
-                echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Quality Control approved. Card routed to Encapsulation.', 'evg-platform' ) . '</p></div>';
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "QC Approved for Card ID {$card_id}. Dispatched to Encapsulation." );
+                }
+
+                $redirect_url = admin_url( 'admin.php?page=evg_tab_quality-control&approved=1' );
+                if ( ! headers_sent() ) {
+                    wp_safe_redirect( $redirect_url );
+                    exit;
+                } else {
+                    echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                    exit;
+                }
             } elseif ( 'reject' === $qc_action ) {
                 $wpdb->update(
                     $table_cards,
@@ -75,14 +86,31 @@ function evg_quality_control_tab() {
                     array( '%d' )
                 );
 
-                Elite_Vault_Grading_System::log_activity( "QC Rejected for Card ID {$card_id}. Returned to Grading Desk." );
-                echo '<div class="notice notice-error is-dismissible" style="background:#141416; border-left:4px solid #ff453a; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'QC Rejected. Card returned to Grading Desk for re-assessment.', 'evg-platform' ) . '</p></div>';
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "QC Rejected for Card ID {$card_id}. Returned to Grading Desk." );
+                }
+
+                $redirect_url = admin_url( 'admin.php?page=evg_tab_quality-control&rejected=1' );
+                if ( ! headers_sent() ) {
+                    wp_safe_redirect( $redirect_url );
+                    exit;
+                } else {
+                    echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                    exit;
+                }
             }
         }
     }
 
+    if ( isset( $_GET['approved'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Quality Control approved. Card routed to Encapsulation.', 'evg-platform' ) . '</p></div>';
+    }
+    if ( isset( $_GET['rejected'] ) ) {
+        echo '<div class="notice notice-error is-dismissible" style="background:#141416; border-left:4px solid #ff453a; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'QC Rejected. Card returned to Grading Desk for re-assessment.', 'evg-platform' ) . '</p></div>';
+    }
+
     $action  = isset( $_GET['action'] ) ? sanitize_key( $_GET['action'] ) : 'list';
-    $card_id = isset( $_GET['card_id'] ) ? intval( $_GET['card_id'] ) : 0;
+    $card_id = isset( $_GET['card_id'] ) ? absint( $_GET['card_id'] ) : 0;
 
     if ( 'review' === $action && $card_id > 0 ) {
         evg_render_pro_qc_review_interface( $card_id, $table_cards, $table_submissions, $table_assessments, $table_faults );
@@ -119,6 +147,8 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .evg-qc-header h1 {
             font-size: 26px;
@@ -137,7 +167,7 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
             background: var(--evg-bg-card);
             border: 1px solid var(--evg-border);
             border-radius: 14px;
-            overflow: hidden;
+            overflow-x: auto;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
         }
 
@@ -156,6 +186,7 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
             padding: 16px 20px;
             border-bottom: 1px solid var(--evg-border);
             text-align: left;
+            white-space: nowrap;
         }
         .evg-qc-table tbody td {
             padding: 18px 20px;
@@ -187,7 +218,7 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
 
         .evg-btn-qc {
             background: var(--evg-gold);
-            color: #0a0a0a;
+            color: #0a0a0a !important;
             padding: 8px 18px;
             font-size: 12px;
             font-weight: 800;
@@ -197,18 +228,73 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
             align-items: center;
             gap: 6px;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            white-space: nowrap;
         }
         .evg-btn-qc:hover {
             background: #f3e5ab;
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(212, 175, 55, 0.25);
-            color: #000000;
+            color: #000000 !important;
+        }
+
+        /* DataTables Custom UI Styling */
+        .dataTables_wrapper .dataTables_paginate {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+            padding: 15px 20px;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            background: #141416 !important;
+            border: 1px solid #28282b !important;
+            color: #8e8e93 !important;
+            border-radius: 6px !important;
+            padding: 5px 12px !important;
+            font-size: 12px !important;
+            font-family: monospace !important;
+            font-weight: 700 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current,
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: var(--evg-gold) !important;
+            color: #0a0a0a !important;
+            border-color: var(--evg-gold) !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled,
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled:hover {
+            background: #101012 !important;
+            border-color: #1f1f23 !important;
+            color: #444449 !important;
+            cursor: not-allowed !important;
+        }
+        .dataTables_wrapper .dataTables_length,
+        .dataTables_wrapper .dataTables_filter,
+        .dataTables_wrapper .dataTables_info {
+            padding: 15px 20px;
+            color: var(--evg-text-muted);
+            font-size: 12px;
+        }
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            background: #141416;
+            border: 1px solid #28282b;
+            color: #ffffff;
+            border-radius: 4px;
+            padding: 5px 10px;
+            outline: none;
+        }
+        .dataTables_wrapper .dataTables_filter input:focus,
+        .dataTables_wrapper .dataTables_length select:focus {
+            border-color: var(--evg-gold);
         }
     </style>
 
     <div class="evg-qc-header">
         <div>
-            <h1><?php esc_html_e( 'Quality Control Queue', 'evg-platform' ); ?></h1>
+            <h1><?php esc_html_e( 'QC Queue', 'evg-platform' ); ?></h1>
             <p><?php esc_html_e( 'Step 5 of the Grading Process. Verify card information, grade labels, and slab presentation before sealing.', 'evg-platform' ); ?></p>
         </div>
         <div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
@@ -255,7 +341,7 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
                             </td>
                             <td style="text-align: right;">
                                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_quality-control&action=review&card_id=' . $card->id ) ); ?>" class="evg-btn-qc">
-                                    🛡️ <?php esc_html_e( 'Run QC Check', 'evg-platform' ); ?>
+                                    🛡️ <?php esc_html_e( 'Verify', 'evg-platform' ); ?>
                                 </a>
                             </td>
                         </tr>
@@ -273,10 +359,22 @@ function evg_render_pro_qc_list( $table_cards, $table_submissions ) {
 
     <script>
         jQuery(document).ready(function($) {
-            $('.evg-datatable').DataTable({
-                "pageLength": 15,
-                "language": { "search": "Filter QC Queue:" }
-            });
+            if ($.fn.DataTable && $('.evg-datatable tbody tr').length > 0 && $('.evg-datatable tbody tr td').length > 1) {
+                $('.evg-datatable').DataTable({
+                    "pageLength": 5,
+                    "lengthMenu": [ [5, 10, 25, 50, -1], [5, 10, 25, 50, "All"] ],
+                    "order": [[ 0, "asc" ]],
+                    "language": {
+                        "search": "Filter QC Queue:",
+                        "lengthMenu": "Display _MENU_ cards per page",
+                        "info": "Showing _START_ to _END_ of _TOTAL_ cards in QC queue",
+                        "paginate": {
+                            "previous": "← Prev",
+                            "next": "Next →"
+                        }
+                    }
+                });
+            }
         });
     </script>
     <?php

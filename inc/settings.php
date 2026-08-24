@@ -17,29 +17,47 @@ function evg_settings_tab() {
     // ---------------------------------------------------------
     // Handle Form Submissions (Save Settings)
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_settings_nonce'] ) ) {
-        if ( wp_verify_nonce( $_POST['evg_settings_nonce'], 'evg_save_settings' ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_settings_nonce'] ) ) {
+        if ( wp_verify_nonce( sanitize_key( $_POST['evg_settings_nonce'] ), 'evg_save_settings' ) ) {
             
             // Submissions Toggle (Sold Out Status)
             $accept_submissions = isset( $_POST['evg_accept_submissions'] ) ? 'yes' : 'no';
             update_option( 'evg_accept_submissions', $accept_submissions );
 
-            // Transparency System Toggle (Future Feature in Spec)
+            // Transparency System Toggle
             $enable_transparency = isset( $_POST['evg_transparency_enabled'] ) ? 'yes' : 'no';
             update_option( 'evg_transparency_enabled', $enable_transparency );
 
             // General Information & Support
-            update_option( 'evg_support_email', sanitize_email( $_POST['evg_support_email'] ) );
-            update_option( 'evg_turnaround_time', sanitize_text_field( $_POST['evg_turnaround_time'] ) );
+            update_option( 'evg_support_email', sanitize_email( wp_unslash( $_POST['evg_support_email'] ?? '' ) ) );
+            update_option( 'evg_turnaround_time', sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ?? '' ) ) );
 
             // Pricing Configuration Matrix
-            update_option( 'evg_price_standard', floatval( $_POST['evg_price_standard'] ) );
-            update_option( 'evg_price_premium_upgrade', floatval( $_POST['evg_price_premium_upgrade'] ) );
+            update_option( 'evg_price_standard', floatval( $_POST['evg_price_standard'] ?? 0 ) );
+            update_option( 'evg_price_premium_upgrade', floatval( $_POST['evg_price_premium_upgrade'] ?? 0 ) );
 
-            Elite_Vault_Grading_System::log_activity( 'Updated Global Platform & Pricing Settings.' );
+            // Additional Configuration Tiers
+            update_option( 'evg_max_cards_per_submission', absint( $_POST['evg_max_cards_per_submission'] ?? 50 ) );
+            update_option( 'evg_return_shipping_fee', floatval( $_POST['evg_return_shipping_fee'] ?? 9.99 ) );
+            update_option( 'evg_announcement_banner', sanitize_text_field( wp_unslash( $_POST['evg_announcement_banner'] ?? '' ) ) );
+
+            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                Elite_Vault_Grading_System::log_activity( 'Updated Global Platform & Pricing Settings.' );
+            }
             
-            echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Platform settings successfully saved and applied.', 'evg-platform' ) . '</p></div>';
+            $redirect_url = admin_url( 'admin.php?page=evg_tab_settings&settings_updated=1' );
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
+            }
         }
+    }
+
+    if ( isset( $_GET['settings_updated'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Platform settings successfully saved and applied.', 'evg-platform' ) . '</p></div>';
     }
 
     // ---------------------------------------------------------
@@ -51,6 +69,9 @@ function evg_settings_tab() {
     $turnaround_time     = get_option( 'evg_turnaround_time', '30-45 Business Days' );
     $price_standard      = get_option( 'evg_price_standard', '15.00' );
     $price_premium       = get_option( 'evg_price_premium_upgrade', '5.00' );
+    $max_cards           = get_option( 'evg_max_cards_per_submission', '50' );
+    $shipping_fee        = get_option( 'evg_return_shipping_fee', '9.99' );
+    $announcement        = get_option( 'evg_announcement_banner', '' );
     ?>
 
     <style>
@@ -67,6 +88,8 @@ function evg_settings_tab() {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .evg-set-header h1 {
             font-size: 26px;
@@ -89,11 +112,15 @@ function evg_settings_tab() {
         }
 
         .evg-set-box {
-            background: #0f0f11;
-            border: 1px solid #222224;
+            background: var(--evg-bg-card);
+            border: 1px solid var(--evg-border);
             border-radius: 14px;
             overflow: hidden;
             box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+            margin-bottom: 24px;
+        }
+        .evg-set-box:last-child {
+            margin-bottom: 0;
         }
         .evg-set-box-header {
             padding: 18px 20px;
@@ -234,7 +261,7 @@ function evg_settings_tab() {
 
     <div class="evg-set-header">
         <div>
-            <h1><?php esc_html_e( 'Platform Configuration & Settings', 'evg-platform' ); ?></h1>
+            <h1><?php esc_html_e( 'Settings', 'evg-platform' ); ?></h1>
             <p><?php esc_html_e( 'Manage global pricing tiers, submission intake controls, support routing, and turnaround estimates.', 'evg-platform' ); ?></p>
         </div>
     </div>
@@ -283,7 +310,7 @@ function evg_settings_tab() {
                     </div>
                 </div>
 
-                <div class="evg-set-box" style="margin-top: 24px;">
+                <div class="evg-set-box">
                     <div class="evg-set-box-header">
                         <h2><?php esc_html_e( 'Communication & Operations', 'evg-platform' ); ?></h2>
                     </div>
@@ -335,13 +362,35 @@ function evg_settings_tab() {
                         </div>
                     </div>
                 </div>
+
+                <div class="evg-set-box">
+                    <div class="evg-set-box-header">
+                        <h2><?php esc_html_e( 'Logistics & Checkout Limits', 'evg-platform' ); ?></h2>
+                    </div>
+                    <div class="evg-set-box-body">
+                        <div class="evg-input-group">
+                            <label><?php esc_html_e( 'Max Cards Per Order Batch', 'evg-platform' ); ?></label>
+                            <input type="number" name="evg_max_cards_per_submission" class="evg-field-control" min="1" value="<?php echo esc_attr( $max_cards ); ?>" required>
+                        </div>
+                        
+                        <div class="evg-input-group">
+                            <label><?php esc_html_e( 'Tracked Return Shipping Fee (£)', 'evg-platform' ); ?></label>
+                            <input type="number" name="evg_return_shipping_fee" class="evg-field-control" min="0.00" step="0.01" value="<?php echo esc_attr( number_format( (float) $shipping_fee, 2, '.', '' ) ); ?>" required>
+                        </div>
+
+                        <div class="evg-input-group">
+                            <label><?php esc_html_e( 'Top Banner Announcement (Optional)', 'evg-platform' ); ?></label>
+                            <input type="text" name="evg_announcement_banner" class="evg-field-control" value="<?php echo esc_attr( $announcement ); ?>" placeholder="e.g. Free return shipping on orders over £150!">
+                        </div>
+                    </div>
+                </div>
             </div>
 
         </div>
 
         <div style="margin-top: 24px; display: flex; justify-content: flex-end;">
             <button type="submit" class="evg-btn-save-settings">
-                <?php esc_html_e( 'Save & Apply Global Settings', 'evg-platform' ); ?>
+                <?php esc_html_e( 'Save Settings', 'evg-platform' ); ?>
             </button>
         </div>
     </form>

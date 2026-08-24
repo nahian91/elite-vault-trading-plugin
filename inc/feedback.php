@@ -2,6 +2,7 @@
 /**
  * EVG Module: Customer Feedback
  * Manages customer reviews, suggestions, marketing permissions, and featured testimonials.
+ * Standard pagination configured to 5 items per page.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -20,11 +21,11 @@ function evg_feedback_tab() {
     // ---------------------------------------------------------
     // Handle Form Submissions (Update Feedback Status)
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_feedback_nonce'] ) ) {
-        if ( wp_verify_nonce( $_POST['evg_feedback_nonce'], 'evg_update_feedback' ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_feedback_nonce'] ) ) {
+        if ( wp_verify_nonce( sanitize_key( $_POST['evg_feedback_nonce'] ), 'evg_update_feedback' ) ) {
             
-            $feedback_id = intval( $_POST['feedback_id'] );
-            $status      = sanitize_text_field( $_POST['status'] );
+            $feedback_id = absint( $_POST['feedback_id'] ?? 0 );
+            $status      = sanitize_text_field( wp_unslash( $_POST['status'] ?? 'Pending' ) );
 
             $wpdb->update(
                 $table_feedback,
@@ -34,9 +35,18 @@ function evg_feedback_tab() {
                 array( '%d' )
             );
 
-            Elite_Vault_Grading_System::log_activity( "Updated Feedback ID {$feedback_id} status to: {$status}" );
+            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                Elite_Vault_Grading_System::log_activity( "Updated Feedback ID {$feedback_id} status to: {$status}" );
+            }
             
-            echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Feedback status updated successfully.', 'evg-platform' ) . '</p></div>';
+            $redirect_url = admin_url( 'admin.php?page=evg_tab_feedback&fb_updated=1' );
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
+            }
         }
     }
 
@@ -44,12 +54,29 @@ function evg_feedback_tab() {
     // Handle Deletion (Remove Feedback)
     // ---------------------------------------------------------
     if ( isset( $_GET['delete_feedback'] ) && isset( $_GET['_wpnonce'] ) ) {
-        if ( wp_verify_nonce( $_GET['_wpnonce'], 'evg_delete_feedback_' . intval( $_GET['delete_feedback'] ) ) ) {
-            $del_id = intval( $_GET['delete_feedback'] );
+        $del_id = absint( $_GET['delete_feedback'] );
+        if ( wp_verify_nonce( sanitize_key( $_GET['_wpnonce'] ), 'evg_delete_feedback_' . $del_id ) ) {
             $wpdb->delete( $table_feedback, array( 'id' => $del_id ), array( '%d' ) );
-            Elite_Vault_Grading_System::log_activity( "Deleted Feedback ID {$del_id}." );
-            echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #ff453a; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Feedback entry permanently removed.', 'evg-platform' ) . '</p></div>';
+            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                Elite_Vault_Grading_System::log_activity( "Deleted Feedback ID {$del_id}." );
+            }
+
+            $redirect_url = admin_url( 'admin.php?page=evg_tab_feedback&fb_deleted=1' );
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
+            }
         }
+    }
+
+    if ( isset( $_GET['fb_updated'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Feedback status updated successfully.', 'evg-platform' ) . '</p></div>';
+    }
+    if ( isset( $_GET['fb_deleted'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #ff453a; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Feedback entry permanently removed.', 'evg-platform' ) . '</p></div>';
     }
 
     // ---------------------------------------------------------
@@ -62,7 +89,7 @@ function evg_feedback_tab() {
     // ---------------------------------------------------------
     // Fetch All Feedback Records
     // ---------------------------------------------------------
-    $feedbacks = $wpdb->get_results( "SELECT * FROM {$table_feedback} ORDER BY submitted_at DESC" );
+    $feedbacks = $wpdb->get_results( "SELECT * FROM {$table_feedback} ORDER BY id DESC" );
     
     // Helper function for rendering stars
     if ( ! function_exists( 'evg_render_pro_stars' ) ) {
@@ -80,6 +107,14 @@ function evg_feedback_tab() {
     ?>
 
     <style>
+        :root {
+            --evg-gold: #d4af37;
+            --evg-gold-light: #f3e5ab;
+            --evg-border: #222224;
+            --evg-bg-card: #0f0f11;
+            --evg-text-muted: #8e8e93;
+        }
+
         .evg-feedback-container {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: #ffffff;
@@ -90,6 +125,8 @@ function evg_feedback_tab() {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .evg-feedback-header h1 {
             font-size: 26px;
@@ -99,7 +136,7 @@ function evg_feedback_tab() {
             letter-spacing: -0.5px;
         }
         .evg-feedback-header p {
-            color: #8e8e93;
+            color: var(--evg-text-muted);
             font-size: 13px;
             margin: 0;
         }
@@ -158,10 +195,10 @@ function evg_feedback_tab() {
         }
 
         .evg-card-panel {
-            background: #0f0f0f;
-            border: 1px solid #222222;
+            background: var(--evg-bg-card);
+            border: 1px solid var(--evg-border);
             border-radius: 14px;
-            overflow: hidden;
+            overflow-x: auto;
             box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
         }
         .evg-card-panel-header {
@@ -188,14 +225,15 @@ function evg_feedback_tab() {
         }
         .evg-fb-table thead th {
             background: #111113;
-            color: #8e8e93;
+            color: var(--evg-text-muted);
             font-size: 11px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.8px;
-            padding: 14px 20px;
-            border-bottom: 1px solid #1f1f22;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--evg-border);
             text-align: left;
+            white-space: nowrap;
         }
         .evg-fb-table tbody td {
             padding: 18px 20px;
@@ -314,15 +352,69 @@ function evg_feedback_tab() {
             background: #ff453a;
             color: #ffffff;
         }
+
+        /* Custom DataTables Pagination Styling */
+        .dataTables_wrapper .dataTables_paginate {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+            padding: 15px 20px;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            background: #141416 !important;
+            border: 1px solid #28282b !important;
+            color: #8e8e93 !important;
+            border-radius: 6px !important;
+            padding: 5px 12px !important;
+            font-size: 12px !important;
+            font-family: monospace !important;
+            font-weight: 700 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current,
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: var(--evg-gold) !important;
+            color: #0a0a0a !important;
+            border-color: var(--evg-gold) !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled,
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled:hover {
+            background: #101012 !important;
+            border-color: #1f1f23 !important;
+            color: #444449 !important;
+            cursor: not-allowed !important;
+        }
+        .dataTables_wrapper .dataTables_length,
+        .dataTables_wrapper .dataTables_filter,
+        .dataTables_wrapper .dataTables_info {
+            padding: 15px 20px;
+            color: var(--evg-text-muted);
+            font-size: 12px;
+        }
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            background: #141416;
+            border: 1px solid #28282b;
+            color: #ffffff;
+            border-radius: 4px;
+            padding: 5px 10px;
+            outline: none;
+        }
+        .dataTables_wrapper .dataTables_filter input:focus,
+        .dataTables_wrapper .dataTables_length select:focus {
+            border-color: var(--evg-gold);
+        }
     </style>
 
     <div class="evg-feedback-container">
         <div class="evg-feedback-header">
             <div>
-                <h1><?php esc_html_e( 'Customer Reviews & Suggestions', 'evg-platform' ); ?></h1>
+                <h1><?php esc_html_e( 'Feedback', 'evg-platform' ); ?></h1>
                 <p><?php esc_html_e( 'Review collector experiences, respond to queries, and curate featured public testimonials.', 'evg-platform' ); ?></p>
             </div>
-            <div style="font-size: 12px; color: #8e8e93; font-family: monospace;">
+            <div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
                 <?php printf( esc_html__( '%d Total Entries', 'evg-platform' ), $total_feedback ); ?>
             </div>
         </div>
@@ -353,7 +445,7 @@ function evg_feedback_tab() {
                     <svg viewBox="0 0 576 512"><path d="M316.9 18C311.6 7 300.4 0 288.1 0s-23.4 7-28.8 18L195 150.3 51.4 171.5c-12 1.8-22 10.2-25.7 21.7s-.7 24.2 7.9 32.7L137.8 329 113.2 474.7c-2 12 3 24.2 12.9 31.3s23 8 33.8 2.3l128.3-68.5 128.3 68.5c10.8 5.7 23.9 4.9 33.8-2.3s14.9-19.3 12.9-31.3L438.5 329 542.7 225.9c8.6-8.5 11.7-21.2 7.9-32.7s-13.7-19.9-25.7-21.7L381.2 150.3 316.9 18z"/></svg>
                 </div>
                 <div class="evg-stat-content">
-                    <h3 style="color:#d4af37;"><?php echo esc_html( number_format_i18n( $featured_count ) ); ?></h3>
+                    <h3><?php echo esc_html( number_format_i18n( $featured_count ) ); ?></h3>
                     <p><?php esc_html_e( 'Featured Testimonials', 'evg-platform' ); ?></p>
                 </div>
             </div>
@@ -363,7 +455,7 @@ function evg_feedback_tab() {
             <div class="evg-card-panel-header">
                 <h2><?php esc_html_e( 'Feedback & Suggestions Ledger', 'evg-platform' ); ?></h2>
             </div>
-            <div style="overflow-x: auto;">
+            <div>
                 <table class="evg-fb-table evg-datatable">
                     <thead>
                         <tr>
@@ -378,19 +470,19 @@ function evg_feedback_tab() {
                     <tbody>
                         <?php if ( ! empty( $feedbacks ) ) : ?>
                             <?php foreach ( $feedbacks as $fb ) : 
-                                $badge_class = 'evg-status-' . ( $fb->status === 'Featured Testimonial' ? 'Featured' : $fb->status );
+                                $badge_class = 'evg-status-' . ( 'Featured Testimonial' === $fb->status ? 'Featured' : $fb->status );
                                 $timestamp   = strtotime( $fb->submitted_at );
                             ?>
                                 <tr>
-                                    <td data-order="<?php echo esc_attr( $timestamp ); ?>" style="color: #8e8e93; font-size: 12px; white-space: nowrap;">
+                                    <td data-order="<?php echo esc_attr( $timestamp ); ?>" style="color: var(--evg-text-muted); font-size: 12px; white-space: nowrap;">
                                         <?php echo esc_html( date_i18n( 'M j, Y', $timestamp ) ); ?><br>
                                         <span style="font-size: 11px; color: #636366;"><?php echo esc_html( date_i18n( 'H:i', $timestamp ) ); ?> UTC</span>
                                     </td>
                                     <td>
                                         <strong style="color: #ffffff; font-size: 14px;"><?php echo esc_html( $fb->customer_name ? $fb->customer_name : 'Anonymous Collector' ); ?></strong><br>
-                                        <span style="color: #8e8e93; font-size: 12px;"><?php echo esc_html( $fb->email_address ); ?></span>
+                                        <span style="color: var(--evg-text-muted); font-size: 12px;"><?php echo esc_html( $fb->email_address ); ?></span>
                                         <?php if ( ! empty( $fb->order_number ) ) : ?>
-                                            <br><span style="font-family: monospace; color: #d4af37; font-size: 11px; font-weight: 700;">Ref: #<?php echo esc_html( $fb->order_number ); ?></span>
+                                            <br><span style="font-family: monospace; color: var(--evg-gold); font-size: 11px; font-weight: 700;">Ref: #<?php echo esc_html( $fb->order_number ); ?></span>
                                         <?php endif; ?>
                                     </td>
                                     <td>
@@ -408,11 +500,11 @@ function evg_feedback_tab() {
                                                 <?php if ( $fb->permission_to_use ) : ?>
                                                     <span style="color:#34c759;">✓ <?php esc_html_e( 'Marketing Consent Granted', 'evg-platform' ); ?></span>
                                                 <?php else : ?>
-                                                    <span style="color:#8e8e93;">✕ <?php esc_html_e( 'Private Submission Only', 'evg-platform' ); ?></span>
+                                                    <span style="color:var(--evg-text-muted);">✕ <?php esc_html_e( 'Private Submission Only', 'evg-platform' ); ?></span>
                                                 <?php endif; ?>
                                             </div>
                                             <?php if ( ! empty( $fb->recommend ) ) : ?>
-                                                <span style="font-size: 11px; color: #8e8e93;">
+                                                <span style="font-size: 11px; color: var(--evg-text-muted);">
                                                     Recommends: <strong style="color: #ffffff;"><?php echo esc_html( $fb->recommend ); ?></strong>
                                                 </span>
                                             <?php endif; ?>
@@ -424,7 +516,7 @@ function evg_feedback_tab() {
                                         </span>
                                     </td>
                                     <td style="text-align: right;">
-                                        <form method="post" style="margin: 0; display: inline-block; width: 100%;">
+                                        <form method="post" action="" style="margin: 0; display: inline-block; width: 100%;">
                                             <?php wp_nonce_field( 'evg_update_feedback', 'evg_feedback_nonce' ); ?>
                                             <input type="hidden" name="feedback_id" value="<?php echo esc_attr( $fb->id ); ?>">
                                             <select name="status" class="evg-select-control">
@@ -449,7 +541,7 @@ function evg_feedback_tab() {
                             <?php endforeach; ?>
                         <?php else : ?>
                             <tr>
-                                <td colspan="6" style="text-align: center; color: #8e8e93; padding: 40px;">
+                                <td colspan="6" style="text-align: center; color: var(--evg-text-muted); padding: 40px;">
                                     <?php esc_html_e( 'No customer feedback or suggestions cataloged in database.', 'evg-platform' ); ?>
                                 </td>
                             </tr>
@@ -462,11 +554,22 @@ function evg_feedback_tab() {
 
     <script>
         jQuery(document).ready(function($) {
-            $('.evg-datatable').DataTable({
-                "pageLength": 15,
-                "order": [[ 0, "desc" ]],
-                "language": { "search": "Search Feedback:" }
-            });
+            if ($.fn.DataTable && $('.evg-datatable tbody tr').length > 0 && $('.evg-datatable tbody tr td').length > 1) {
+                $('.evg-datatable').DataTable({
+                    "pageLength": 5,
+                    "lengthMenu": [ [5, 10, 25, 50, -1], [5, 10, 25, 50, "All"] ],
+                    "order": [[ 0, "desc" ]],
+                    "language": {
+                        "search": "Search Feedback:",
+                        "lengthMenu": "Display _MENU_ records per page",
+                        "info": "Showing _START_ to _END_ of _TOTAL_ feedback entries",
+                        "paginate": {
+                            "previous": "← Prev",
+                            "next": "Next →"
+                        }
+                    }
+                });
+            }
         });
     </script>
     <?php

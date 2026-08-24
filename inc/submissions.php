@@ -3,6 +3,7 @@
  * EVG Module: Submissions & Orders (Pro Edition)
  * Comprehensive order lifecycle manager, declared card ledger, 10-stage pipeline routing,
  * inline card entry, customer address verification, and tax invoice generation.
+ * Pagination configured to 5 items per page.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -15,15 +16,20 @@ function evg_submissions_tab() {
         return;
     }
 
+    // Ensure WordPress Media Uploader Scripts are Loaded
+    if ( function_exists( 'wp_enqueue_media' ) ) {
+        wp_enqueue_media();
+    }
+
     global $wpdb;
 
     $table_submissions = $wpdb->prefix . 'evg_submissions';
     $table_cards       = $wpdb->prefix . 'evg_cards';
 
     // ---------------------------------------------------------
-    // Handle Form Submissions (Updating Order Lifecycle & Metadata)
+    // 1. Handle Form Submissions (Updating Order Lifecycle & Metadata)
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_update_submission_nonce'] ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_update_submission_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_update_submission_nonce'] ), 'evg_update_submission' ) ) {
             
             $sub_id         = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
@@ -54,22 +60,32 @@ function evg_submissions_tab() {
                 );
             }
 
-            Elite_Vault_Grading_System::log_activity( "Updated Order ID {$sub_id} to stage: {$new_stage} (Payment: {$payment_status})" );
-            echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Submission order parameters successfully updated.', 'evg-platform' ) . '</p></div>';
+            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                Elite_Vault_Grading_System::log_activity( "Updated Order ID {$sub_id} to stage: {$new_stage} (Payment: {$payment_status})" );
+            }
+
+            $redirect_url = admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub_id . '&updated=1' );
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
+            }
         }
     }
 
     // ---------------------------------------------------------
-    // Handle Adding New Card to Existing Submission
+    // 2. Handle Adding New Card to Existing Submission
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_add_card_nonce'] ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_add_card_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_add_card_nonce'] ), 'evg_add_card_to_submission' ) ) {
             $sub_id          = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
             $card_name       = isset( $_POST['card_name'] ) ? sanitize_text_field( wp_unslash( $_POST['card_name'] ) ) : '';
             $set_name        = isset( $_POST['set_name'] ) ? sanitize_text_field( wp_unslash( $_POST['set_name'] ) ) : '';
             $card_number     = isset( $_POST['card_number'] ) ? sanitize_text_field( wp_unslash( $_POST['card_number'] ) ) : '';
             $language        = isset( $_POST['language'] ) ? sanitize_text_field( wp_unslash( $_POST['language'] ) ) : 'English';
-            $final_grade     = isset( $_POST['final_grade'] ) && '' !== $_POST['final_grade'] ? absint( $_POST['final_grade'] ) : null;
+            $final_grade     = ( isset( $_POST['final_grade'] ) && '' !== $_POST['final_grade'] ) ? absint( $_POST['final_grade'] ) : null;
             $front_image_url = isset( $_POST['front_image_url'] ) ? esc_url_raw( wp_unslash( $_POST['front_image_url'] ) ) : '';
             $back_image_url  = isset( $_POST['back_image_url'] ) ? esc_url_raw( wp_unslash( $_POST['back_image_url'] ) ) : '';
             $grading_status  = isset( $_POST['grading_status'] ) ? sanitize_text_field( wp_unslash( $_POST['grading_status'] ) ) : 'Pending';
@@ -87,8 +103,7 @@ function evg_submissions_tab() {
                         'front_image_url' => $front_image_url,
                         'back_image_url'  => $back_image_url,
                         'grading_status'  => $grading_status,
-                    ),
-                    array( '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
+                    )
                 );
 
                 // Update total cards count on parent submission
@@ -101,10 +116,30 @@ function evg_submissions_tab() {
                     array( '%d' )
                 );
 
-                Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Order ID {$sub_id}." );
-                echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'New card unit added to submission successfully.', 'evg-platform' ) . '</p></div>';
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Order ID {$sub_id}." );
+                }
+
+                $redirect_url = admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub_id . '&card_added=1' );
+                if ( ! headers_sent() ) {
+                    wp_safe_redirect( $redirect_url );
+                    exit;
+                } else {
+                    echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                    exit;
+                }
             }
         }
+    }
+
+    // ---------------------------------------------------------
+    // 3. Notifications Display
+    // ---------------------------------------------------------
+    if ( isset( $_GET['updated'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Submission order parameters successfully updated.', 'evg-platform' ) . '</p></div>';
+    }
+    if ( isset( $_GET['card_added'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'New card unit added to submission successfully.', 'evg-platform' ) . '</p></div>';
     }
 
     $action = isset( $_GET['action'] ) ? sanitize_key( $_GET['action'] ) : 'list';
@@ -127,7 +162,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
         SELECT s.*, u.user_email, u.display_name 
         FROM {$table_submissions} s
         LEFT JOIN {$wpdb->users} u ON s.customer_id = u.ID
-        ORDER BY s.submission_date DESC
+        ORDER BY s.id DESC
     " );
     ?>
     <style>
@@ -144,6 +179,8 @@ function evg_render_pro_submissions_list( $table_submissions ) {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .evg-sub-header h1 {
             font-size: 26px;
@@ -162,7 +199,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
             background: var(--evg-bg-card);
             border: 1px solid var(--evg-border);
             border-radius: 14px;
-            overflow: hidden;
+            overflow-x: auto;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
         }
 
@@ -181,6 +218,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
             padding: 16px 20px;
             border-bottom: 1px solid var(--evg-border);
             text-align: left;
+            white-space: nowrap;
         }
         .evg-sub-table tbody td {
             padding: 18px 20px;
@@ -258,6 +296,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
             font-weight: 600;
             text-decoration: none;
             transition: all 0.2s ease;
+            white-space: nowrap;
         }
         .evg-btn-manage:hover {
             border-color: var(--evg-gold);
@@ -265,15 +304,69 @@ function evg_render_pro_submissions_list( $table_submissions ) {
             background: rgba(212, 175, 55, 0.1);
             transform: translateY(-1px);
         }
+
+        /* DataTables Custom UI */
+        .dataTables_wrapper .dataTables_paginate {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+            padding: 15px 20px;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            background: #141416 !important;
+            border: 1px solid #28282b !important;
+            color: #8e8e93 !important;
+            border-radius: 6px !important;
+            padding: 5px 12px !important;
+            font-size: 12px !important;
+            font-family: monospace !important;
+            font-weight: 700 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current,
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: var(--evg-gold) !important;
+            color: #0a0a0a !important;
+            border-color: var(--evg-gold) !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled,
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled:hover {
+            background: #101012 !important;
+            border-color: #1f1f23 !important;
+            color: #444449 !important;
+            cursor: not-allowed !important;
+        }
+        .dataTables_wrapper .dataTables_length,
+        .dataTables_wrapper .dataTables_filter,
+        .dataTables_wrapper .dataTables_info {
+            padding: 15px 20px;
+            color: var(--evg-text-muted);
+            font-size: 12px;
+        }
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            background: #141416;
+            border: 1px solid #28282b;
+            color: #ffffff;
+            border-radius: 4px;
+            padding: 5px 10px;
+            outline: none;
+        }
+        .dataTables_wrapper .dataTables_filter input:focus,
+        .dataTables_wrapper .dataTables_length select:focus {
+            border-color: var(--evg-gold);
+        }
     </style>
 
     <div class="evg-sub-header">
         <div>
-            <h1><?php esc_html_e( 'Submissions & Orders', 'evg-platform' ); ?></h1>
+            <h1><?php esc_html_e( 'Submissions', 'evg-platform' ); ?></h1>
             <p><?php esc_html_e( 'Audit collector submission records, update pipeline progress, and review declared card metadata.', 'evg-platform' ); ?></p>
         </div>
         <div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
-            <?php printf( esc_html__( '%d Orders Recorded', 'evg-platform' ), count( $submissions ) ); ?>
+            <?php printf( esc_html__( '%d Submissions Logged', 'evg-platform' ), count( $submissions ) ); ?>
         </div>
     </div>
 
@@ -333,7 +426,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
                             </td>
                             <td style="text-align: right;">
                                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub->id ) ); ?>" class="evg-btn-manage">
-                                    <?php esc_html_e( 'Manage Order →', 'evg-platform' ); ?>
+                                    <?php esc_html_e( 'Manage →', 'evg-platform' ); ?>
                                 </a>
                             </td>
                         </tr>
@@ -351,11 +444,22 @@ function evg_render_pro_submissions_list( $table_submissions ) {
 
     <script>
         jQuery(document).ready(function($) {
-            $('.evg-datatable').DataTable({
-                "pageLength": 25,
-                "order": [[ 2, "desc" ]],
-                "language": { "search": "Filter Submissions:" }
-            });
+            if ($.fn.DataTable && $('.evg-datatable tbody tr').length > 0 && $('.evg-datatable tbody tr td').length > 1) {
+                $('.evg-datatable').DataTable({
+                    "pageLength": 5,
+                    "lengthMenu": [ [5, 10, 25, 50, -1], [5, 10, 25, 50, "All"] ],
+                    "order": [[ 2, "desc" ]],
+                    "language": {
+                        "search": "Search Submissions:",
+                        "lengthMenu": "Display _MENU_ submissions per page",
+                        "info": "Showing _START_ to _END_ of _TOTAL_ submissions",
+                        "paginate": {
+                            "previous": "← Prev",
+                            "next": "Next →"
+                        }
+                    }
+                });
+            }
         });
     </script>
     <?php
@@ -639,9 +743,9 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
     <div class="evg-sub-header">
         <div>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions' ) ); ?>" style="color: #d4af37; text-decoration: none; font-size: 13px; font-weight: 700; margin-bottom: 8px; display: inline-block;">
-                ← <?php esc_html_e( 'Back to Orders Directory', 'evg-platform' ); ?>
+                ← <?php esc_html_e( 'Back to Submissions', 'evg-platform' ); ?>
             </a>
-            <h1><?php printf( esc_html__( 'Submission Order Ref #%s', 'evg-platform' ), esc_html( $submission->order_number ) ); ?></h1>
+            <h1><?php printf( esc_html__( 'Submission Ref #%s', 'evg-platform' ), esc_html( $submission->order_number ) ); ?></h1>
             <p><?php printf( esc_html__( 'Declared by %s on %s', 'evg-platform' ), esc_html( $submission->display_name ? $submission->display_name : 'Guest' ), esc_html( date_i18n( 'F j, Y', strtotime( $submission->submission_date ) ) ) ); ?></p>
         </div>
     </div>
@@ -649,7 +753,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
     <!-- 10-Stage Pipeline Progression Bar -->
     <div class="evg-pipeline-strip">
         <span style="font-size: 11px; text-transform: uppercase; color: #8e8e93; font-weight: 700; letter-spacing: 0.5px;">
-            <?php esc_html_e( 'Live 10-Stage Pipeline Status:', 'evg-platform' ); ?> <strong style="color: #d4af37;"><?php echo esc_html( $submission->current_stage ); ?></strong>
+            <?php esc_html_e( 'Pipeline Status:', 'evg-platform' ); ?> <strong style="color: #d4af37;"><?php echo esc_html( $submission->current_stage ); ?></strong>
         </span>
         <div class="evg-steps-bar">
             <?php 
@@ -677,9 +781,9 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
         <div>
             <div class="evg-box-panel">
                 <div class="evg-box-panel-header">
-                    <h2><?php esc_html_e( 'Declared Pokemon Cards Manifest', 'evg-platform' ); ?></h2>
+                    <h2><?php esc_html_e( 'Declared Cards Manifest', 'evg-platform' ); ?></h2>
                     <span style="font-size: 12px; color: #8e8e93; font-weight: 700; font-family: monospace;">
-                        <?php printf( esc_html__( '%d Declared Units', 'evg-platform' ), count( $cards ) ); ?>
+                        <?php printf( esc_html__( '%d Units', 'evg-platform' ), count( $cards ) ); ?>
                     </span>
                 </div>
 
@@ -738,10 +842,10 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                     <?php endif; ?>
                 </div>
 
-                <!-- In-Line Add Card Form (Direct Intake Entry for this Order) -->
+                <!-- In-Line Add Card Form -->
                 <div class="evg-add-card-shell">
                     <h3 style="color: #ffffff; font-size: 13px; font-weight: 700; text-transform: uppercase; margin: 0 0 14px 0;">
-                        + <?php esc_html_e( 'Direct Add Card to this Order', 'evg-platform' ); ?>
+                        + <?php esc_html_e( 'Direct Add Card', 'evg-platform' ); ?>
                     </h3>
                     <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $submission->id ) ); ?>">
                         <?php wp_nonce_field( 'evg_add_card_to_submission', 'evg_add_card_nonce' ); ?>
@@ -775,7 +879,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
 
                         <div class="evg-inline-grid">
                             <div>
-                                <label style="display: block; color: #d4af37; font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;"><?php esc_html_e( 'Certified Grade (Optional)', 'evg-platform' ); ?></label>
+                                <label style="display: block; color: #d4af37; font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;"><?php esc_html_e( 'Grade (Optional)', 'evg-platform' ); ?></label>
                                 <select name="final_grade" class="evg-field-control">
                                     <option value="" selected><?php esc_html_e( 'Pending Assessment', 'evg-platform' ); ?></option>
                                     <?php for ( $g = 10; $g >= 1; $g-- ) : ?>
@@ -793,7 +897,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <button type="submit" class="evg-btn-save" style="padding: 10px; font-size: 12px;">
-                            + <?php esc_html_e( 'Add Card to This Order', 'evg-platform' ); ?>
+                            + <?php esc_html_e( 'Add Card', 'evg-platform' ); ?>
                         </button>
                     </form>
                 </div>
@@ -804,14 +908,14 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
         <div>
             <div class="evg-box-panel">
                 <div class="evg-box-panel-header">
-                    <h2><?php esc_html_e( 'Order Parameters', 'evg-platform' ); ?></h2>
+                    <h2><?php esc_html_e( 'Parameters', 'evg-platform' ); ?></h2>
                 </div>
                 <div class="evg-form-box">
                     
                     <!-- Collector Details -->
                     <div style="background: #141416; border: 1px solid #222224; border-radius: 8px; padding: 14px; margin-bottom: 16px;">
                         <span style="font-size: 10px; text-transform: uppercase; color: #8e8e93; font-weight: 700; letter-spacing: 0.8px; display: block; margin-bottom: 4px;">
-                            <?php esc_html_e( 'Collector Account', 'evg-platform' ); ?>
+                            <?php esc_html_e( 'Collector', 'evg-platform' ); ?>
                         </span>
                         <strong style="color: #ffffff; font-size: 14px; display: block;"><?php echo esc_html( $submission->display_name ? $submission->display_name : 'Guest' ); ?></strong>
                         <span style="color: #8e8e93; font-size: 12px;"><?php echo esc_html( $submission->user_email ); ?></span>
@@ -824,7 +928,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                     <?php if ( ! empty( $street_address ) || ! empty( $postcode ) ) : ?>
                         <div style="background: #141416; border: 1px solid #222224; border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 12px; line-height: 1.4;">
                             <span style="font-size: 10px; text-transform: uppercase; color: #8e8e93; font-weight: 700; letter-spacing: 0.8px; display: block; margin-bottom: 4px;">
-                                <?php esc_html_e( 'UK Return Logistics Address', 'evg-platform' ); ?>
+                                <?php esc_html_e( 'Destination Address', 'evg-platform' ); ?>
                             </span>
                             <span style="color: #ffffff;"><?php echo esc_html( trim( $house_number . ' ' . $street_address ) ); ?></span><br>
                             <span style="color: #8e8e93;"><?php echo esc_html( $town_city . ', ' . $county ); ?></span><br>
@@ -837,7 +941,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         <input type="hidden" name="submission_id" value="<?php echo esc_attr( $submission->id ); ?>">
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Pipeline Lifecycle Stage', 'evg-platform' ); ?></label>
+                            <label><?php esc_html_e( 'Stage', 'evg-platform' ); ?></label>
                             <select name="current_stage" class="evg-field-control">
                                 <?php foreach ( $stages as $stg_key => $stg_label ) : ?>
                                     <option value="<?php echo esc_attr( $stg_key ); ?>" <?php selected( $submission->current_stage, $stg_key ); ?>>
@@ -848,7 +952,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Billing & Payment Status', 'evg-platform' ); ?></label>
+                            <label><?php esc_html_e( 'Payment', 'evg-platform' ); ?></label>
                             <select name="payment_status" class="evg-field-control">
                                 <option value="Pending" <?php selected( $submission->payment_status, 'Pending' ); ?>><?php esc_html_e( 'Pending', 'evg-platform' ); ?></option>
                                 <option value="Paid" <?php selected( $submission->payment_status, 'Paid' ); ?>><?php esc_html_e( 'Paid', 'evg-platform' ); ?></option>
@@ -858,17 +962,17 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Return Dispatch Tracking Ref', 'evg-platform' ); ?></label>
+                            <label><?php esc_html_e( 'Tracking', 'evg-platform' ); ?></label>
                             <input type="text" name="return_tracking" class="evg-field-control" placeholder="<?php esc_attr_e( 'e.g. Royal Mail Special Delivery #', 'evg-platform' ); ?>" value="<?php echo esc_attr( $submission->return_tracking ); ?>">
                         </div>
 
                         <button type="submit" class="evg-btn-save">
-                            <?php esc_html_e( 'Update Order Lifecycle', 'evg-platform' ); ?>
+                            <?php esc_html_e( 'Update', 'evg-platform' ); ?>
                         </button>
                     </form>
 
                     <a href="<?php echo esc_url( admin_url( 'admin-post.php?action=evg_download_invoice&submission_id=' . $submission->id ) ); ?>" target="_blank" class="evg-btn-invoice">
-                        📄 <?php esc_html_e( 'Print Formal Tax Invoice', 'evg-platform' ); ?>
+                        📄 <?php esc_html_e( 'Invoice', 'evg-platform' ); ?>
                     </a>
                 </div>
             </div>
@@ -877,14 +981,18 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
 
     <script>
         function evg_select_inline_media() {
-            var custom_uploader = wp.media({
-                title: 'Select Front Card Artwork',
-                button: { text: 'Use this photo' },
-                multiple: false
-            }).on('select', function() {
-                var attachment = custom_uploader.state().get('selection').first().toJSON();
-                jQuery('#inline_front_url').val(attachment.url);
-            }).open();
+            if (typeof wp !== 'undefined' && wp.media) {
+                var custom_uploader = wp.media({
+                    title: 'Select Front Card Artwork',
+                    button: { text: 'Use this photo' },
+                    multiple: false
+                }).on('select', function() {
+                    var attachment = custom_uploader.state().get('selection').first().toJSON();
+                    jQuery('#inline_front_url').val(attachment.url);
+                }).open();
+            } else {
+                alert('WordPress Media Library is not available. Please paste image URL directly.');
+            }
         }
     </script>
     <?php

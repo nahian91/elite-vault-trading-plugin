@@ -2,6 +2,7 @@
 /**
  * EVG Module: Payments & Billing (Pro Edition)
  * Revenue telemetry, billing reconciliation, transaction tracking, and refund processing.
+ * Standard pagination configured to 5 items per page.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -20,11 +21,11 @@ function evg_transactions_tab() {
     // ---------------------------------------------------------
     // Handle Form Submissions (Update Transaction Status)
     // ---------------------------------------------------------
-    if ( $_SERVER['REQUEST_METHOD'] === 'POST' && isset( $_POST['evg_payment_nonce'] ) ) {
-        if ( wp_verify_nonce( $_POST['evg_payment_nonce'], 'evg_update_payment' ) ) {
+    if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_payment_nonce'] ) ) {
+        if ( wp_verify_nonce( sanitize_key( $_POST['evg_payment_nonce'] ), 'evg_update_payment' ) ) {
             
-            $sub_id         = intval( $_POST['submission_id'] );
-            $payment_status = sanitize_text_field( $_POST['payment_status'] );
+            $sub_id         = absint( $_POST['submission_id'] ?? 0 );
+            $payment_status = sanitize_text_field( wp_unslash( $_POST['payment_status'] ?? 'Pending' ) );
 
             $wpdb->update(
                 $table_submissions,
@@ -34,39 +35,49 @@ function evg_transactions_tab() {
                 array( '%d' )
             );
 
-            Elite_Vault_Grading_System::log_activity( "Updated Payment Status for Order ID {$sub_id} to: {$payment_status}" );
-            echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Transaction record updated successfully.', 'evg-platform' ) . '</p></div>';
+            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                Elite_Vault_Grading_System::log_activity( "Updated Payment Status for Order ID {$sub_id} to: {$payment_status}" );
+            }
+
+            $redirect_url = admin_url( 'admin.php?page=evg_tab_transactions&tx_updated=1' );
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
+            }
         }
     }
 
-    // ---------------------------------------------------------
-    // Fetch Aggregate Financial Metrics
-    // ---------------------------------------------------------
-    $metrics = $wpdb->get_results( "SELECT payment_status, SUM(total_amount) as total FROM {$table_submissions} GROUP BY payment_status" );
-    
-    $total_revenue  = 0;
-    $total_pending  = 0;
-    $total_refunded = 0;
-
-    foreach ( $metrics as $m ) {
-        if ( $m->payment_status === 'Paid' ) {
-            $total_revenue = floatval( $m->total );
-        } elseif ( $m->payment_status === 'Pending' ) {
-            $total_pending = floatval( $m->total );
-        } elseif ( $m->payment_status === 'Refunded' || $m->payment_status === 'Partial Refund' ) {
-            $total_refunded += floatval( $m->total );
-        }
+    if ( isset( $_GET['tx_updated'] ) ) {
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Transaction record updated successfully.', 'evg-platform' ) . '</p></div>';
     }
 
     // ---------------------------------------------------------
-    // Fetch All Transaction Entries
+    // Fetch All Transaction Entries & Compute Accurate Totals
     // ---------------------------------------------------------
     $transactions = $wpdb->get_results( "
         SELECT s.id, s.order_number, s.submission_date, s.total_amount, s.payment_status, s.current_stage, s.total_cards, s.service_type, u.display_name, u.user_email 
         FROM {$table_submissions} s
         LEFT JOIN {$wpdb->users} u ON s.customer_id = u.ID
-        ORDER BY s.submission_date DESC
+        ORDER BY s.id DESC
     " );
+
+    $total_revenue  = 0;
+    $total_pending  = 0;
+    $total_refunded = 0;
+
+    foreach ( $transactions as $tx ) {
+        $amount = floatval( $tx->total_amount );
+        if ( 'Paid' === $tx->payment_status ) {
+            $total_revenue += $amount;
+        } elseif ( 'Pending' === $tx->payment_status ) {
+            $total_pending += $amount;
+        } elseif ( 'Refunded' === $tx->payment_status || 'Partial Refund' === $tx->payment_status ) {
+            $total_refunded += $amount;
+        }
+    }
     ?>
 
     <style>
@@ -83,6 +94,8 @@ function evg_transactions_tab() {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .evg-tx-header h1 {
             font-size: 26px;
@@ -150,7 +163,7 @@ function evg_transactions_tab() {
             background: var(--evg-bg-card);
             border: 1px solid var(--evg-border);
             border-radius: 14px;
-            overflow: hidden;
+            overflow-x: auto;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
         }
 
@@ -169,6 +182,7 @@ function evg_transactions_tab() {
             padding: 16px 20px;
             border-bottom: 1px solid var(--evg-border);
             text-align: left;
+            white-space: nowrap;
         }
         .evg-tx-table tbody td {
             padding: 16px 20px;
@@ -261,15 +275,69 @@ function evg_transactions_tab() {
             border-color: var(--evg-gold);
             color: var(--evg-gold);
         }
+
+        /* Custom DataTables Pagination Styling */
+        .dataTables_wrapper .dataTables_paginate {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+            padding: 15px 20px;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            background: #141416 !important;
+            border: 1px solid #28282b !important;
+            color: #8e8e93 !important;
+            border-radius: 6px !important;
+            padding: 5px 12px !important;
+            font-size: 12px !important;
+            font-family: monospace !important;
+            font-weight: 700 !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current,
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: var(--evg-gold) !important;
+            color: #0a0a0a !important;
+            border-color: var(--evg-gold) !important;
+        }
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled,
+        .dataTables_wrapper .dataTables_paginate .paginate_button.disabled:hover {
+            background: #101012 !important;
+            border-color: #1f1f23 !important;
+            color: #444449 !important;
+            cursor: not-allowed !important;
+        }
+        .dataTables_wrapper .dataTables_length,
+        .dataTables_wrapper .dataTables_filter,
+        .dataTables_wrapper .dataTables_info {
+            padding: 15px 20px;
+            color: var(--evg-text-muted);
+            font-size: 12px;
+        }
+        .dataTables_wrapper .dataTables_filter input,
+        .dataTables_wrapper .dataTables_length select {
+            background: #141416;
+            border: 1px solid #28282b;
+            color: #ffffff;
+            border-radius: 4px;
+            padding: 5px 10px;
+            outline: none;
+        }
+        .dataTables_wrapper .dataTables_filter input:focus,
+        .dataTables_wrapper .dataTables_length select:focus {
+            border-color: var(--evg-gold);
+        }
     </style>
 
     <div class="evg-tx-header">
         <div>
-            <h1><?php esc_html_e( 'Payments & Financial Ledger', 'evg-platform' ); ?></h1>
+            <h1><?php esc_html_e( 'Billing', 'evg-platform' ); ?></h1>
             <p><?php esc_html_e( 'Audit transaction statuses, balance reconciliations, customer invoices, and refund workflows.', 'evg-platform' ); ?></p>
         </div>
         <div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
-            <?php printf( esc_html__( '%d Billing Transactions Recorded', 'evg-platform' ), count( $transactions ) ); ?>
+            <?php printf( esc_html__( '%d Transactions Recorded', 'evg-platform' ), count( $transactions ) ); ?>
         </div>
     </div>
 
@@ -351,7 +419,7 @@ function evg_transactions_tab() {
                                 </span>
                             </td>
                             <td style="text-align: right;">
-                                <form method="post" style="display: inline-flex; gap: 6px; align-items: center; margin: 0;">
+                                <form method="post" action="" style="display: inline-flex; gap: 6px; align-items: center; margin: 0;">
                                     <?php wp_nonce_field( 'evg_update_payment', 'evg_payment_nonce' ); ?>
                                     <input type="hidden" name="submission_id" value="<?php echo esc_attr( $tx->id ); ?>">
                                     <select name="payment_status" class="evg-select-control">
@@ -384,11 +452,22 @@ function evg_transactions_tab() {
 
     <script>
         jQuery(document).ready(function($) {
-            $('.evg-datatable').DataTable({
-                "pageLength": 25,
-                "order": [[ 2, "desc" ]],
-                "language": { "search": "Search Transactions:" }
-            });
+            if ($.fn.DataTable && $('.evg-datatable tbody tr').length > 0 && $('.evg-datatable tbody tr td').length > 1) {
+                $('.evg-datatable').DataTable({
+                    "pageLength": 5,
+                    "lengthMenu": [ [5, 10, 25, 50, -1], [5, 10, 25, 50, "All"] ],
+                    "order": [[ 2, "desc" ]],
+                    "language": {
+                        "search": "Search Transactions:",
+                        "lengthMenu": "Display _MENU_ transactions per page",
+                        "info": "Showing _START_ to _END_ of _TOTAL_ financial records",
+                        "paginate": {
+                            "previous": "← Prev",
+                            "next": "Next →"
+                        }
+                    }
+                });
+            }
         });
     </script>
     <?php

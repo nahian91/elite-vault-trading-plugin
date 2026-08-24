@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Elite Vault Grading - Platform Core
  * Plugin URI:        https://elitevaultgrading.com
- * Description:       Standalone, high-performance ERP core & internal grading engine for EVG featuring pre-order/submission tracking, strict 1-10 integer grading assessments, fault evidence uploads, quality control desk, marketplace stock management, and staff RBAC.
- * Version:           1.3.0
+ * Description:       Standalone ERP core & internal grading engine for EVG featuring dual-stream customer tracking (Marketplace Orders vs Grading Submissions), 1-10 integer grading, QC desk, stock management, and public slab verification.
+ * Version:           1.4.1
  * Author:            EVG Dev
  * Author URI:        https://elitevaultgrading.com
  * Text Domain:       evg-platform
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 1. Constants & Path Definitions
  */
-define( 'EVG_CORE_VERSION', '1.3.0' );
+define( 'EVG_CORE_VERSION', '1.4.1' );
 define( 'EVG_CORE_PATH', plugin_dir_path( __FILE__ ) );
 define( 'EVG_CORE_URL', plugin_dir_url( __FILE__ ) );
 define( 'EVG_CORE_BASENAME', plugin_basename( __FILE__ ) );
@@ -55,14 +55,16 @@ final class Elite_Vault_Grading_System {
     private function load_modular_dependencies() {
         $files = array(
             'dashboard',
-            'submissions',
+            'submissions',       // Grading Submissions Management
+            'marketplace-orders',// Marketplace Orders
             'grading-desk',
             'quality-control',
             'marketplace',
             'customers',
             'transactions',
             'feedback',
-            'settings'
+            'settings',
+            'verification'       // Public QR Slab Lookup Handler
         );
 
         foreach ( $files as $file ) {
@@ -100,6 +102,17 @@ final class Elite_Vault_Grading_System {
 
         // Secure Backend Invoice Generation Action
         add_action( 'admin_post_evg_download_invoice', array( $this, 'handle_invoice_download' ) );
+
+        // Query Vars for Public Verification Endpoint
+        add_filter( 'query_vars', array( $this, 'register_verification_query_vars' ) );
+    }
+
+    /**
+     * Register Public Slab Verification Query Var (?cert=EVG-XXXXX)
+     */
+    public function register_verification_query_vars( $vars ) {
+        $vars[] = 'cert';
+        return $vars;
     }
 
     /**
@@ -107,16 +120,15 @@ final class Elite_Vault_Grading_System {
      */
     public static function get_order_stages() {
         return array(
-            'Pre-Order Received'    => __( 'Pre-Order Received', 'evg-platform' ),
-            'Cards Awaiting Arrival'=> __( 'Cards Awaiting Arrival', 'evg-platform' ),
-            'Cards Received'        => __( 'Cards Received', 'evg-platform' ),
-            'Authentication Check'  => __( 'Authentication Check', 'evg-platform' ),
-            'Under Review'          => __( 'Under Review', 'evg-platform' ),
-            'Grading In Progress'   => __( 'Grading In Progress', 'evg-platform' ),
-            'Quality Control'       => __( 'Quality Control', 'evg-platform' ),
-            'Encapsulation'         => __( 'Encapsulation', 'evg-platform' ),
-            'Completed'             => __( 'Completed', 'evg-platform' ),
-            'Returned To Customer'  => __( 'Returned To Customer', 'evg-platform' ),
+            'Cards Awaiting Arrival' => __( 'Cards Awaiting Arrival', 'evg-platform' ),
+            'Cards Received'         => __( 'Cards Received', 'evg-platform' ),
+            'Authentication Check'   => __( 'Authentication Check', 'evg-platform' ),
+            'Under Review'           => __( 'Under Review', 'evg-platform' ),
+            'Grading In Progress'    => __( 'Grading In Progress', 'evg-platform' ),
+            'Quality Control'        => __( 'Quality Control', 'evg-platform' ),
+            'Encapsulation'          => __( 'Encapsulation', 'evg-platform' ),
+            'Completed'              => __( 'Completed', 'evg-platform' ),
+            'Returned To Customer'   => __( 'Returned To Customer', 'evg-platform' ),
         );
     }
 
@@ -181,14 +193,14 @@ final class Elite_Vault_Grading_System {
                     <p>support@elitevaultgrading.com | www.elitevaultgrading.com</p>
                 </div>
                 <div style="text-align: right;">
-                    <h2>INVOICE</h2>
+                    <h2>GRADING PACKING MANIFEST</h2>
                     <p><strong>Order:</strong> #<?php echo esc_html( $order->order_number ); ?><br>
                     <strong>Date:</strong> <?php echo esc_html( $order->submission_date ); ?><br>
                     <strong>Service:</strong> <?php echo esc_html( $order->service_type ); ?></p>
                 </div>
             </div>
             <div style="margin-top: 20px;">
-                <strong>Billed To:</strong><br>
+                <strong>Declared By:</strong><br>
                 <?php echo esc_html( $customer ? $customer->display_name : 'Customer' ); ?><br>
                 <?php echo esc_html( $customer ? $customer->user_email : '' ); ?>
             </div>
@@ -218,7 +230,7 @@ final class Elite_Vault_Grading_System {
                     <?php endif; ?>
                 </tbody>
             </table>
-            <p class="total">Total: &pound;<?php echo number_format( $order->total_amount, 2 ); ?> (<?php echo esc_html( $order->payment_status ); ?>)</p>
+            <p class="total">Total Authorized: &pound;<?php echo number_format( $order->total_amount, 2 ); ?> (<?php echo esc_html( $order->payment_status ); ?>)</p>
             <script>window.print();</script>
         </body>
         </html>
@@ -279,7 +291,7 @@ final class Elite_Vault_Grading_System {
         $charset_collate = $wpdb->get_charset_collate();
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-        // Schema Model 1: Submissions/Orders (Pre-orders and Live Grading Submissions)
+        // Schema Model 1: Submissions/Orders (Grading Submissions Pipeline)
         $table_submissions = $wpdb->prefix . 'evg_submissions';
         $sql_submissions = "CREATE TABLE $table_submissions (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -292,7 +304,7 @@ final class Elite_Vault_Grading_System {
             label_option varchar(50) DEFAULT 'Standard Label' NOT NULL,
             payment_status varchar(30) DEFAULT 'Pending' NOT NULL,
             total_amount decimal(10,2) DEFAULT '0.00' NOT NULL,
-            current_stage varchar(50) DEFAULT 'Pre-Order Received' NOT NULL,
+            current_stage varchar(50) DEFAULT 'Cards Awaiting Arrival' NOT NULL,
             return_tracking varchar(100) DEFAULT '' NOT NULL,
             PRIMARY KEY  (id),
             UNIQUE KEY order_number (order_number),
@@ -301,7 +313,7 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_submissions );
 
-        // Schema Model 2: Individual Card Records (Strict whole number integer grade 1-10)
+        // Schema Model 2: Individual Card Records (Strict 1-10 Scale)
         $table_cards = $wpdb->prefix . 'evg_cards';
         $sql_cards = "CREATE TABLE $table_cards (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -316,14 +328,14 @@ final class Elite_Vault_Grading_System {
             back_image_url varchar(255) DEFAULT '' NOT NULL,
             final_grade int(11) DEFAULT NULL,
             grading_status varchar(50) DEFAULT 'Pending' NOT NULL,
-            transparency_published boolean DEFAULT 0 NOT NULL,
+            transparency_published tinyint(1) DEFAULT 0 NOT NULL,
             PRIMARY KEY  (id),
             KEY submission_idx (submission_id),
             KEY status_idx (grading_status)
         ) $charset_collate;";
         dbDelta( $sql_cards );
 
-        // Schema Model 3: Grading Assessment Desk (Centreing, Corners, Edges, Surface)
+        // Schema Model 3: Grading Assessment Desk
         $table_assessments = $wpdb->prefix . 'evg_assessments';
         $sql_assessments = "CREATE TABLE $table_assessments (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -342,7 +354,7 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_assessments );
 
-        // Schema Model 4: Assessment Fault Images (Whitening, Scratches, Print lines, Surface, Corners, Edges)
+        // Schema Model 4: Assessment Fault Images
         $table_faults = $wpdb->prefix . 'evg_fault_images';
         $sql_faults = "CREATE TABLE $table_faults (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -356,32 +368,53 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_faults );
 
-        // Schema Model 5: Public Marketplace Inventory (Full Card Meta + Slabs)
-$table_marketplace = $wpdb->prefix . 'evg_marketplace';
-$sql_marketplace = "CREATE TABLE $table_marketplace (
-    id bigint(20) NOT NULL AUTO_INCREMENT,
-    card_id bigint(20) DEFAULT NULL,
-    card_title varchar(255) NOT NULL,
-    set_name varchar(255) NOT NULL,
-    card_number varchar(50) DEFAULT '' NOT NULL,
-    language varchar(50) DEFAULT 'English' NOT NULL,
-    grading_company varchar(100) DEFAULT 'Elite Vault Grading' NOT NULL,
-    slab_information varchar(255) DEFAULT 'Elite Vault Sealed Protective Slab' NOT NULL,
-    assigned_grade int(11) DEFAULT NULL,
-    image_url varchar(255) NOT NULL,
-    price decimal(10,2) NOT NULL,
-    stock_quantity int(11) DEFAULT 1 NOT NULL,
-    category varchar(100) DEFAULT 'Elite Vault Graded Cards' NOT NULL,
-    status varchar(30) DEFAULT 'Available' NOT NULL,
-    listed_date datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY  (id),
-    KEY card_idx (card_id),
-    KEY status_idx (status),
-    KEY category_idx (category)
-) $charset_collate;";
-dbDelta( $sql_marketplace );
+        // Schema Model 5: Public Marketplace Inventory
+        $table_marketplace = $wpdb->prefix . 'evg_marketplace';
+        $sql_marketplace = "CREATE TABLE $table_marketplace (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            card_id bigint(20) DEFAULT NULL,
+            card_title varchar(255) NOT NULL,
+            set_name varchar(255) NOT NULL,
+            card_number varchar(50) DEFAULT '' NOT NULL,
+            language varchar(50) DEFAULT 'English' NOT NULL,
+            grading_company varchar(100) DEFAULT 'Elite Vault Grading' NOT NULL,
+            slab_information varchar(255) DEFAULT 'Elite Vault Sealed Protective Slab' NOT NULL,
+            assigned_grade int(11) DEFAULT NULL,
+            image_url varchar(255) NOT NULL,
+            price decimal(10,2) NOT NULL,
+            stock_quantity int(11) DEFAULT 1 NOT NULL,
+            category varchar(100) DEFAULT 'Elite Vault Graded Cards' NOT NULL,
+            status varchar(30) DEFAULT 'Available' NOT NULL,
+            listed_date datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id),
+            KEY card_idx (card_id),
+            KEY status_idx (status),
+            KEY category_idx (category)
+        ) $charset_collate;";
+        dbDelta( $sql_marketplace );
 
-        // Schema Model 6: Customer Feedback Form Submissions
+        // Schema Model 6: Customer Marketplace Purchases / Direct Orders
+        $table_orders = $wpdb->prefix . 'evg_orders';
+        $sql_orders = "CREATE TABLE $table_orders (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            order_number varchar(50) NOT NULL,
+            customer_id bigint(20) NOT NULL,
+            marketplace_item_id bigint(20) NOT NULL,
+            card_id bigint(20) DEFAULT NULL,
+            amount_paid decimal(10,2) NOT NULL,
+            payment_gateway varchar(50) DEFAULT 'Stripe' NOT NULL,
+            payment_status varchar(30) DEFAULT 'Paid' NOT NULL,
+            shipping_status varchar(50) DEFAULT 'Processing' NOT NULL,
+            tracking_number varchar(100) DEFAULT '' NOT NULL,
+            purchased_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY order_number (order_number),
+            KEY customer_idx (customer_id),
+            KEY card_idx (card_id)
+        ) $charset_collate;";
+        dbDelta( $sql_orders );
+
+        // Schema Model 7: Customer Feedback Form Submissions
         $table_feedback = $wpdb->prefix . 'evg_feedback';
         $sql_feedback = "CREATE TABLE $table_feedback (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -392,7 +425,7 @@ dbDelta( $sql_marketplace );
             rating int(1) NOT NULL,
             feedback_text text NOT NULL,
             recommend varchar(10) DEFAULT 'Not sure' NOT NULL,
-            permission_to_use boolean DEFAULT 0 NOT NULL,
+            permission_to_use tinyint(1) DEFAULT 0 NOT NULL,
             status varchar(30) DEFAULT 'Pending' NOT NULL,
             admin_notes text NOT NULL,
             submitted_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -401,7 +434,7 @@ dbDelta( $sql_marketplace );
         ) $charset_collate;";
         dbDelta( $sql_feedback );
 
-        // Schema Model 7: Security Audit Core Ledger
+        // Schema Model 8: Security Audit Core Ledger
         $table_audit = $wpdb->prefix . 'evg_audit_logs';
         $sql_audit = "CREATE TABLE $table_audit (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -416,33 +449,15 @@ dbDelta( $sql_marketplace );
         ) $charset_collate;";
         dbDelta( $sql_audit );
 
-        // --------------------------------------------------------
-        // ROLE REGISTRATION: Create EVG Staff Roles on Activation
-        // --------------------------------------------------------
+        // Roles Registration
         if ( ! get_role( 'support_team' ) ) {
-            add_role( 'support_team', __( 'Support Team', 'evg-platform' ), array(
-                'read' => true,
-            ));
+            add_role( 'support_team', __( 'Support Team', 'evg-platform' ), array( 'read' => true ) );
         }
-
         if ( ! get_role( 'grader' ) ) {
-            add_role( 'grader', __( 'Grader', 'evg-platform' ), array(
-                'read' => true,
-            ));
+            add_role( 'grader', __( 'Grader', 'evg-platform' ), array( 'read' => true ) );
         }
-
         if ( ! get_role( 'head_grader' ) ) {
-            add_role( 'head_grader', __( 'Head Grader', 'evg-platform' ), array(
-                'read' => true,
-            ));
-        }
-
-        // Initialize Global Settings Defaults
-        if ( false === get_option( 'evg_grading_sold_out' ) ) {
-            add_option( 'evg_grading_sold_out', 'no' );
-        }
-        if ( false === get_option( 'evg_transparency_enabled' ) ) {
-            add_option( 'evg_transparency_enabled', 'yes' );
+            add_role( 'head_grader', __( 'Head Grader', 'evg-platform' ), array( 'read' => true ) );
         }
 
         update_option( 'evg_db_version', EVG_CORE_VERSION );
@@ -479,7 +494,7 @@ dbDelta( $sql_marketplace );
     }
 
     /**
-     * Data Map Engine for Backend Navigation Modules
+     * Data Map Engine for Backend Navigation Modules (Single-Word Labels)
      */
     public function get_tabs_config() {
         return array(
@@ -489,12 +504,17 @@ dbDelta( $sql_marketplace );
                 'roles' => array()
             ),
             'submissions' => array(
-                'label' => __( 'Submissions & Orders', 'evg-platform' ),
+                'label' => __( 'Submissions', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path d="M0 64C0 28.7 28.7 0 64 0H224V128c0 17.7 14.3 32 32 32H384V288H216c-13.3 0-24 10.7-24 24s10.7 24 24 24H384V448c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V64zM384 336V288H494.1l-39-39c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l80 80c9.4 9.4 9.4 24.6 0 33.9l-80 80c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l39-39H384zm0-208H256V0L384 128z"/></svg>',
                 'roles' => array( 'administrator', 'support_team', 'head_grader' )
             ),
+            'marketplace-orders' => array(
+                'label' => __( 'Orders', 'evg-platform' ),
+                'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path d="M0 24C0 10.7 10.7 0 24 0H69.5c22 0 41.5 12.8 50.6 32h411c26.3 0 45.5 25 38.6 50.4l-41 152.3c-8.5 31.4-37 53.3-69.5 53.3H170.7l5.4 28.5c2.2 11.3 12.1 19.5 23.6 19.5H488c13.3 0 24 10.7 24 24s-10.7 24-24 24H199.7c-34.6 0-64.3-24.6-70.7-58.5L77.4 54.5c-.7-3.8-4-6.5-7.9-6.5H24C10.7 48 0 37.3 0 24z"/></svg>',
+                'roles' => array( 'administrator', 'support_team' )
+            ),
             'grading-desk' => array(
-                'label' => __( 'Grading Desk', 'evg-platform' ),
+                'label' => __( 'Grading', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M152.1 38.2c9.9 8.9 10.7 24 1.8 33.9l-72 80c-4.8 5.3-11.2 8.1-18.1 7.8s-13.1-3.6-17.5-9L14.4 115.1c-8.2-10-6.8-24.8 3.2-33s24.8-6.8 33 3.2l16 19.5 51.5-57.3c8.9-9.9 24-10.7 33.9-1.8zM416 128H256c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32zM152.1 198.2c9.9 8.9 10.7 24 1.8 33.9l-72 80c-4.8 5.3-11.2 8.1-18.1 7.8s-13.1-3.6-17.5-9L14.4 275.1c-8.2-10-6.8-24.8 3.2-33s24.8-6.8 33 3.2l16 19.5 51.5-57.3c8.9-9.9 24-10.7 33.9-1.8zM416 288H256c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32zM152.1 358.2c9.9 8.9 10.7 24 1.8 33.9l-72 80c-4.8 5.3-11.2 8.1-18.1 7.8s-13.1-3.6-17.5-9L14.4 435.1c-8.2-10-6.8-24.8 3.2-33s24.8-6.8 33 3.2l16 19.5 51.5-57.3c8.9-9.9 24-10.7 33.9-1.8zM416 448H256c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32z"/></svg>',
                 'roles' => array( 'administrator', 'head_grader', 'grader' )
             ),
@@ -504,22 +524,22 @@ dbDelta( $sql_marketplace );
                 'roles' => array( 'administrator', 'head_grader' )
             ),
             'marketplace' => array(
-                'label' => __( 'Public Marketplace', 'evg-platform' ),
-                'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path d="M0 24C0 10.7 10.7 0 24 0H69.5c22 0 41.5 12.8 50.6 32h411c26.3 0 45.5 25 38.6 50.4l-41 152.3c-8.5 31.4-37 53.3-69.5 53.3H170.7l5.4 28.5c2.2 11.3 12.1 19.5 23.6 19.5H488c13.3 0 24 10.7 24 24s-10.7 24-24 24H199.7c-34.6 0-64.3-24.6-70.7-58.5L77.4 54.5c-.7-3.8-4-6.5-7.9-6.5H24C10.7 48 0 37.3 0 24zM128 464a48 48 0 1 1 96 0 48 48 0 1 1 -96 0zm336-48a48 48 0 1 1 0 96 48 48 0 1 1 0-96z"/></svg>',
+                'label' => __( 'Marketplace', 'evg-platform' ),
+                'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path d="M128 464a48 48 0 1 1 96 0 48 48 0 1 1 -96 0zm336-48a48 48 0 1 1 0 96 48 48 0 1 1 0-96z"/></svg>',
                 'roles' => array( 'administrator', 'support_team' )
             ),
             'customers' => array(
-                'label' => __( 'Customer Accounts', 'evg-platform' ),
+                'label' => __( 'Customers', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><path d="M224 256A128 128 0 1 0 224 0a128 128 0 1 0 0 256zm-45.7 48C79.8 304 0 383.8 0 482.3C0 498.7 13.3 512 29.7 512H322.8c-3.1-8.8-3.7-18.4-1.4-27.8l15-60.1c2.8-11.3 8.6-21.5 16.8-29.7l40.3-40.3c-32.1-31-75.7-50.1-123.9-50.1H178.3z"/></svg>',
                 'roles' => array( 'administrator', 'support_team' )
             ),
             'transactions' => array(
-                'label' => __( 'Payments & Billing', 'evg-platform' ),
+                'label' => __( 'Billing', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><path d="M64 64C28.7 64 0 92.7 0 128V384c0 35.3 28.7 64 64 64H512c35.3 0 64-28.7 64-64V128c0-35.3-28.7-64-64-64H64zm64 320H64V320c35.3 0 64 28.7 64 64zM64 192V128h64c0 35.3-28.7 64-64 64zM448 384c0-35.3 28.7-64 64-64v64H448zm64-192c-35.3 0-64-28.7-64-64h64v64zM288 160a96 96 0 1 1 0 192 96 96 0 1 1 0-192z"/></svg>',
                 'roles' => array( 'administrator', 'support_team' )
             ),
             'feedback' => array(
-                'label' => __( 'Customer Feedback', 'evg-platform' ),
+                'label' => __( 'Feedback', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M160 368c26.5 0 48 21.5 48 48v16l72.5-54.4c8.3-6.2 18.4-9.6 28.8-9.6H448c8.8 0 16-7.2 16-16V64c0-8.8-7.2-16-16-16H64c-8.8 0-16 7.2-16 16V352c0 8.8 7.2 16 16 16h96zm48 124l-.2 .2-5.1 3.8-17.1 12.8c-4.8 3.6-11.3 4.2-16.8 1.5s-8.8-8.2-8.8-14.3V474.7v-4.5V416H160c-53 0-96-43-96-96V64C64 11 107-32 160-32H448c53 0 96 43 96 96V352c0 53-43 96-96 96H309.3L208 504z"/></svg>',
                 'roles' => array( 'administrator', 'support_team' )
             ),
@@ -529,7 +549,7 @@ dbDelta( $sql_marketplace );
                 'roles' => array( 'administrator' )
             ),
             'logout' => array(
-                'label' => __( 'Log Out', 'evg-platform' ),
+                'label' => __( 'Logout', 'evg-platform' ),
                 'svg'   => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M160 96c17.7 0 32-14.3 32-32s-14.3-32-32-32H96C43 32 0 75 0 128v256c0 53 43 96 96 96h64c17.7 0 32-14.3 32-32s-14.3-32-32-32H96c-17.7 0-32-14.3-32-32V128c0-17.7 14.3-32 32-32h64zm273 135L313 111c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l123 123H192c-17.7 0-32 14.3-32 32s14.3 32 32 32h198.7L267.7 401.7c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l120-120c12.5-12.5 12.5-32.8 0-45.3z"/></svg>',
                 'roles' => array()
             ),
@@ -601,7 +621,7 @@ dbDelta( $sql_marketplace );
         $is_print_mode = ( isset( $_GET['action'] ) && 'print' === $_GET['action'] );
         $current_user  = wp_get_current_user();
         $display_name  = $current_user->display_name ? $current_user->display_name : __( 'Staff Member', 'evg-platform' );
-        $designation   = !empty($current_user->roles) ? ucfirst($current_user->roles[0]) : __( 'Support', 'evg-platform' );
+        $designation   = ! empty( $current_user->roles ) ? ucfirst( $current_user->roles[0] ) : __( 'Support', 'evg-platform' );
         ?>
 
         <div id="evg-wrapper" class="evg-management-system <?php echo $is_print_mode ? 'evg-print' : ''; ?>">
@@ -618,7 +638,7 @@ dbDelta( $sql_marketplace );
                         </div>
                         <div class="profile-meta">
                             <h4 class="profile-name"><?php echo esc_html( $display_name ); ?></h4>
-                            <span class="profile-designation"><?php echo esc_html( str_replace('_', ' ', $designation) ); ?></span>
+                            <span class="profile-designation"><?php echo esc_html( str_replace( '_', ' ', $designation ) ); ?></span>
                         </div>
                     </div>
 
@@ -645,11 +665,11 @@ dbDelta( $sql_marketplace );
             <div class="evg-right-box">
                 <?php
                 // Dynamic Modular Function Call
-                $callback = 'evg_' . str_replace('-', '_', $active_tab) . '_tab';
+                $callback = 'evg_' . str_replace( '-', '_', $active_tab ) . '_tab';
                 if ( function_exists( $callback ) ) {
                     call_user_func( $callback );
                 } else {
-                    echo '<div class="evg-card"><h2 style="color:#d4af37;">' . esc_html( $all_tabs[$active_tab]['label'] ) . '</h2><p style="color:#a3a3a3;">' . esc_html__( 'Backend Module Handler is being loaded or initialized.', 'evg-platform' ) . '</p></div>';
+                    echo '<div class="evg-card"><h2 style="color:#d4af37;">' . esc_html( $all_tabs[ $active_tab ]['label'] ) . '</h2><p style="color:#a3a3a3;">' . esc_html__( 'Backend Module Handler is being loaded or initialized.', 'evg-platform' ) . '</p></div>';
                 }
                 ?>
             </div>
@@ -670,7 +690,7 @@ dbDelta( $sql_marketplace );
                 body.wp-admin { background: #0a0a0a !important; overflow-x: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
                 .evg-management-system { display: flex; position: relative; min-height: 100vh; width: 100%; }
                 .evg-sidebar-container { 
-                    width: 260px; flex-shrink: 0; background: #111111; 
+                    width: 240px; flex-shrink: 0; background: #111111; 
                     border-right: 1px solid #262626; position: sticky; top: 0; height: 100vh; 
                     display: flex; flex-direction: column; box-sizing: border-box; z-index: 99;
                 }
