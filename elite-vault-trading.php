@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Elite Vault Grading - Platform Core
  * Plugin URI:        https://elitevaultgrading.com
- * Description:       Standalone ERP core & internal grading engine for EVG featuring dual-stream customer tracking (Marketplace Orders vs Grading Submissions), 1-10 integer grading, QC desk, stock management, and public slab verification.
- * Version:           1.4.1
+ * Description:       Standalone ERP core & internal grading engine for EVG featuring dual-stream customer tracking (Marketplace Orders vs Grading Submissions), 1-10 integer grading, QC desk, stock management, £0.99 portfolio unlock paywall, and public slab verification.
+ * Version:           1.4.2
  * Author:            EVG Dev
  * Author URI:        https://elitevaultgrading.com
  * Text Domain:       evg-platform
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 1. Constants & Path Definitions
  */
-define( 'EVG_CORE_VERSION', '1.4.1' );
+define( 'EVG_CORE_VERSION', '1.4.2' );
 define( 'EVG_CORE_PATH', plugin_dir_path( __FILE__ ) );
 define( 'EVG_CORE_URL', plugin_dir_url( __FILE__ ) );
 define( 'EVG_CORE_BASENAME', plugin_basename( __FILE__ ) );
@@ -79,8 +79,9 @@ final class Elite_Vault_Grading_System {
      * Initialize Core Hooks & Filters
      */
     private function init_hooks() {
-        // Activation Routine
+        // Activation & Schema Upgrade Routine
         register_activation_hook( __FILE__, array( $this, 'execute_database_migration' ) );
+        add_action( 'plugins_loaded', array( $this, 'check_plugin_version_upgrades' ) );
 
         // Enqueue Assets
         add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
@@ -100,11 +101,21 @@ final class Elite_Vault_Grading_System {
         add_action( 'login_form', array( $this, 'display_mathematical_captcha' ) );
         add_filter( 'authenticate', array( $this, 'validate_mathematical_captcha' ), 25, 3 );
 
-        // Secure Backend Invoice Generation Action
+        // Secure Backend Actions
         add_action( 'admin_post_evg_download_invoice', array( $this, 'handle_invoice_download' ) );
+        add_action( 'admin_post_evg_save_fault_previews', array( $this, 'handle_save_fault_previews' ) );
 
         // Query Vars for Public Verification Endpoint
         add_filter( 'query_vars', array( $this, 'register_verification_query_vars' ) );
+    }
+
+    /**
+     * Version upgrade check for automated database delta migrations
+     */
+    public function check_plugin_version_upgrades() {
+        if ( get_option( 'evg_db_version' ) !== EVG_CORE_VERSION ) {
+            $this->execute_database_migration();
+        }
     }
 
     /**
@@ -148,6 +159,48 @@ final class Elite_Vault_Grading_System {
             2  => __( '2 - Poor', 'evg-platform' ),
             1  => __( '1 - Damaged', 'evg-platform' ),
         );
+    }
+
+    /**
+     * Handle Admin Portfolio Preview Choices (Up to 3 free preview images)
+     */
+    public function handle_save_fault_previews() {
+        if ( ! self::has_access( array( 'administrator', 'head_grader', 'grader' ) ) ) {
+            wp_die( esc_html__( 'Access Denied: You do not possess the required privilege level for this module.', 'evg-platform' ), 403 );
+        }
+
+        check_admin_referer( 'evg_fault_nonce', 'evg_nonce' );
+
+        $card_id = isset( $_POST['card_id'] ) ? intval( $_POST['card_id'] ) : 0;
+        if ( $card_id <= 0 ) {
+            wp_die( esc_html__( 'Invalid Card ID.', 'evg-platform' ), 400 );
+        }
+
+        global $wpdb;
+        $table_faults = $wpdb->prefix . 'evg_fault_images';
+        $selected_previews = isset( $_POST['free_previews'] ) ? array_map( 'intval', (array) $_POST['free_previews'] ) : array();
+
+        // Strict client constraint: Maximum of 3 images can be designated as free previews
+        if ( count( $selected_previews ) > 3 ) {
+            $selected_previews = array_slice( $selected_previews, 0, 3 );
+        }
+
+        // Reset all images for this card to locked/paid (0)
+        $wpdb->update( $table_faults, array( 'is_free_preview' => 0 ), array( 'card_id' => $card_id ), array( '%d' ), array( '%d' ) );
+
+        // Mark up to 3 selected IDs as free preview (1)
+        if ( ! empty( $selected_previews ) ) {
+            $id_placeholders = implode( ',', array_fill( 0, count( $selected_previews ), '%d' ) );
+            $wpdb->query( $wpdb->prepare(
+                "UPDATE {$table_faults} SET is_free_preview = 1 WHERE card_id = %d AND id IN ($id_placeholders)",
+                array_merge( array( $card_id ), $selected_previews )
+            ) );
+        }
+
+        self::log_activity( "Updated free preview damage photos (up to 3) for Card #{$card_id}" );
+
+        wp_safe_redirect( add_query_arg( array( 'page' => 'evg_tab_grading-desk', 'card_id' => $card_id, 'updated' => '1' ), admin_url( 'admin.php' ) ) );
+        exit;
     }
 
     /**
@@ -301,7 +354,7 @@ final class Elite_Vault_Grading_System {
             service_type varchar(50) DEFAULT 'Standard' NOT NULL,
             submission_slot_tier varchar(50) DEFAULT '1 Card Submission' NOT NULL,
             total_cards int(11) NOT NULL,
-            label_option varchar(50) DEFAULT 'Standard Label' NOT NULL,
+            label_option varchar(50) DEFAULT 'Black Basic' NOT NULL,
             payment_status varchar(30) DEFAULT 'Pending' NOT NULL,
             total_amount decimal(10,2) DEFAULT '0.00' NOT NULL,
             current_stage varchar(50) DEFAULT 'Cards Awaiting Arrival' NOT NULL,
@@ -354,21 +407,42 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_assessments );
 
-        // Schema Model 4: Assessment Fault Images
+        // Schema Model 4: Assessment Fault Images (With card_id & is_free_preview support)
         $table_faults = $wpdb->prefix . 'evg_fault_images';
         $sql_faults = "CREATE TABLE $table_faults (
             id bigint(20) NOT NULL AUTO_INCREMENT,
-            assessment_id bigint(20) NOT NULL,
+            assessment_id bigint(20) DEFAULT 0 NOT NULL,
+            card_id bigint(20) DEFAULT 0 NOT NULL,
             fault_type varchar(50) NOT NULL,
             image_url varchar(255) NOT NULL,
+            is_free_preview tinyint(1) DEFAULT 0 NOT NULL,
             notes text NOT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
             PRIMARY KEY  (id),
-            KEY assessment_idx (assessment_id)
+            KEY assessment_idx (assessment_id),
+            KEY card_idx (card_id),
+            KEY preview_idx (is_free_preview)
         ) $charset_collate;";
         dbDelta( $sql_faults );
 
-        // Schema Model 5: Public Marketplace Inventory
+        // Schema Model 5: £0.99 Full Portfolio Unlock Receipts
+        $table_unlocks = $wpdb->prefix . 'evg_portfolio_unlocks';
+        $sql_unlocks = "CREATE TABLE $table_unlocks (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) NOT NULL,
+            card_id bigint(20) NOT NULL,
+            amount_paid decimal(10,2) DEFAULT '0.99' NOT NULL,
+            payment_status varchar(50) DEFAULT 'Completed' NOT NULL,
+            transaction_id varchar(100) DEFAULT '' NOT NULL,
+            unlocked_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            PRIMARY KEY  (id),
+            UNIQUE KEY user_card_unlock (user_id, card_id),
+            KEY user_idx (user_id),
+            KEY card_idx (card_id)
+        ) $charset_collate;";
+        dbDelta( $sql_unlocks );
+
+        // Schema Model 6: Public Marketplace Inventory
         $table_marketplace = $wpdb->prefix . 'evg_marketplace';
         $sql_marketplace = "CREATE TABLE $table_marketplace (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -393,7 +467,7 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_marketplace );
 
-        // Schema Model 6: Customer Marketplace Purchases / Direct Orders
+        // Schema Model 7: Customer Marketplace Purchases / Direct Orders
         $table_orders = $wpdb->prefix . 'evg_orders';
         $sql_orders = "CREATE TABLE $table_orders (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -414,7 +488,7 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_orders );
 
-        // Schema Model 7: Customer Feedback Form Submissions
+        // Schema Model 8: Customer Feedback Form Submissions
         $table_feedback = $wpdb->prefix . 'evg_feedback';
         $sql_feedback = "CREATE TABLE $table_feedback (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -434,7 +508,7 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_feedback );
 
-        // Schema Model 8: Security Audit Core Ledger
+        // Schema Model 9: Security Audit Core Ledger
         $table_audit = $wpdb->prefix . 'evg_audit_logs';
         $sql_audit = "CREATE TABLE $table_audit (
             id bigint(20) NOT NULL AUTO_INCREMENT,
@@ -448,6 +522,14 @@ final class Elite_Vault_Grading_System {
             KEY timestamp_idx (timestamp)
         ) $charset_collate;";
         dbDelta( $sql_audit );
+
+        // Initialize default option settings if not yet set
+        if ( false === get_option( 'evg_price_standard' ) ) {
+            add_option( 'evg_price_standard', 9.99 );
+        }
+        if ( false === get_option( 'evg_turnaround_time' ) ) {
+            add_option( 'evg_turnaround_time', '5-10 Business Days' );
+        }
 
         // Roles Registration
         if ( ! get_role( 'support_team' ) ) {

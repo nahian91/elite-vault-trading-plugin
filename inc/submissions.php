@@ -2,7 +2,8 @@
 /**
  * EVG Module: Submissions & Orders (Pro Edition)
  * Comprehensive order lifecycle manager, declared card ledger, 10-stage pipeline routing,
- * inline card entry, customer address verification, and tax invoice generation.
+ * inline card entry, customer address verification, automated fee computation (£9.99 base),
+ * turnaround tracking (5-10 business days), and tax invoice generation.
  * Pagination configured to 5 items per page.
  */
 
@@ -36,16 +37,31 @@ function evg_submissions_tab() {
             $new_stage      = isset( $_POST['current_stage'] ) ? sanitize_text_field( wp_unslash( $_POST['current_stage'] ) ) : '';
             $payment_status = isset( $_POST['payment_status'] ) ? sanitize_text_field( wp_unslash( $_POST['payment_status'] ) ) : '';
             $tracking       = isset( $_POST['return_tracking'] ) ? sanitize_text_field( wp_unslash( $_POST['return_tracking'] ) ) : '';
+            $service_type   = isset( $_POST['service_type'] ) ? sanitize_text_field( wp_unslash( $_POST['service_type'] ) ) : 'Standard';
+            $label_option   = isset( $_POST['label_option'] ) ? sanitize_text_field( wp_unslash( $_POST['label_option'] ) ) : 'Standard Label';
+
+            // Optional manual price override or auto-recalc flag
+            $total_amount = isset( $_POST['total_amount'] ) ? floatval( $_POST['total_amount'] ) : null;
+
+            $update_data = array(
+                'current_stage'   => $new_stage,
+                'payment_status'  => $payment_status,
+                'return_tracking' => $tracking,
+                'service_type'    => $service_type,
+                'label_option'    => $label_option,
+            );
+            $update_formats = array( '%s', '%s', '%s', '%s', '%s' );
+
+            if ( null !== $total_amount ) {
+                $update_data['total_amount'] = $total_amount;
+                $update_formats[] = '%f';
+            }
 
             $wpdb->update(
                 $table_submissions,
-                array(
-                    'current_stage'   => $new_stage,
-                    'payment_status'  => $payment_status,
-                    'return_tracking' => $tracking,
-                ),
+                $update_data,
                 array( 'id' => $sub_id ),
-                array( '%s', '%s', '%s' ),
+                $update_formats,
                 array( '%d' )
             );
 
@@ -76,7 +92,7 @@ function evg_submissions_tab() {
     }
 
     // ---------------------------------------------------------
-    // 2. Handle Adding New Card to Existing Submission
+    // 2. Handle Adding New Card to Existing Submission & Recalculate Total
     // ---------------------------------------------------------
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_add_card_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_add_card_nonce'] ), 'evg_add_card_to_submission' ) ) {
@@ -106,18 +122,34 @@ function evg_submissions_tab() {
                     )
                 );
 
+                // Fetch parent submission details
+                $sub_record = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_submissions} WHERE id = %d", $sub_id ) );
+
                 // Update total cards count on parent submission
                 $card_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d", $sub_id ) );
+
+                // Pull configured pricing defaults (£9.99 base)
+                $base_rate   = floatval( get_option( 'evg_price_standard', 9.99 ) );
+                $label_fee   = ( false !== stripos( $sub_record->label_option, 'gold' ) || false !== stripos( $sub_record->label_option, 'custom' ) || false !== stripos( $sub_record->label_option, 'premium' ) ) ? floatval( get_option( 'evg_price_premium_upgrade', 2.99 ) ) : 0.00;
+                $speed_fee   = ( false !== stripos( $sub_record->service_type, 'express' ) || false !== stripos( $sub_record->service_type, 'fast' ) ) ? 4.99 : 0.00;
+                $shipping    = floatval( get_option( 'evg_return_shipping_fee', 9.99 ) );
+
+                // Compute updated total amount
+                $recalculated_total = ( $card_count * ( $base_rate + $label_fee + $speed_fee ) ) + $shipping;
+
                 $wpdb->update(
                     $table_submissions,
-                    array( 'total_cards' => $card_count ),
+                    array(
+                        'total_cards'  => $card_count,
+                        'total_amount' => $recalculated_total,
+                    ),
                     array( 'id' => $sub_id ),
-                    array( '%d' ),
+                    array( '%d', '%f' ),
                     array( '%d' )
                 );
 
                 if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                    Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Order ID {$sub_id}." );
+                    Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Submission ID {$sub_id}. Recalculated total to £" . number_format( $recalculated_total, 2 ) );
                 }
 
                 $redirect_url = admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub_id . '&card_added=1' );
@@ -139,7 +171,7 @@ function evg_submissions_tab() {
         echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Submission order parameters successfully updated.', 'evg-platform' ) . '</p></div>';
     }
     if ( isset( $_GET['card_added'] ) ) {
-        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'New card unit added to submission successfully.', 'evg-platform' ) . '</p></div>';
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'New card unit added to submission successfully and total recalculated.', 'evg-platform' ) . '</p></div>';
     }
 
     $action = isset( $_GET['action'] ) ? sanitize_key( $_GET['action'] ) : 'list';
@@ -363,7 +395,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
     <div class="evg-sub-header">
         <div>
             <h1><?php esc_html_e( 'Submissions', 'evg-platform' ); ?></h1>
-            <p><?php esc_html_e( 'Audit collector submission records, update pipeline progress, and review declared card metadata.', 'evg-platform' ); ?></p>
+            <p><?php esc_html_e( 'Audit collector submission records, update pipeline progress, and review declared card metadata (5-10 business day turnaround).', 'evg-platform' ); ?></p>
         </div>
         <div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
             <?php printf( esc_html__( '%d Submissions Logged', 'evg-platform' ), count( $submissions ) ); ?>
@@ -494,7 +526,8 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
     $postcode       = $customer_id ? get_user_meta( $customer_id, 'evg_postcode', true ) : '';
     $mobile_number  = $customer_id ? get_user_meta( $customer_id, 'evg_mobile_number', true ) : '';
 
-    $stages = Elite_Vault_Grading_System::get_order_stages();
+    $turnaround_setting = get_option( 'evg_turnaround_time', '5-10 Business Days' );
+    $stages             = Elite_Vault_Grading_System::get_order_stages();
 
     $current_stage_idx = array_search( $submission->current_stage, array_keys( $stages ), true );
     if ( false === $current_stage_idx ) {
@@ -746,7 +779,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                 ← <?php esc_html_e( 'Back to Submissions', 'evg-platform' ); ?>
             </a>
             <h1><?php printf( esc_html__( 'Submission Ref #%s', 'evg-platform' ), esc_html( $submission->order_number ) ); ?></h1>
-            <p><?php printf( esc_html__( 'Declared by %s on %s', 'evg-platform' ), esc_html( $submission->display_name ? $submission->display_name : 'Guest' ), esc_html( date_i18n( 'F j, Y', strtotime( $submission->submission_date ) ) ) ); ?></p>
+            <p><?php printf( esc_html__( 'Declared by %s on %s • Estimated Turnaround: %s', 'evg-platform' ), esc_html( $submission->display_name ? $submission->display_name : 'Guest' ), esc_html( date_i18n( 'F j, Y', strtotime( $submission->submission_date ) ) ), esc_html( $turnaround_setting ) ); ?></p>
         </div>
     </div>
 
@@ -783,7 +816,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                 <div class="evg-box-panel-header">
                     <h2><?php esc_html_e( 'Declared Cards Manifest', 'evg-platform' ); ?></h2>
                     <span style="font-size: 12px; color: #8e8e93; font-weight: 700; font-family: monospace;">
-                        <?php printf( esc_html__( '%d Units', 'evg-platform' ), count( $cards ) ); ?>
+                        <?php printf( esc_html__( '%d Units (From £9.99 Base Tier)', 'evg-platform' ), count( $cards ) ); ?>
                     </span>
                 </div>
 
@@ -897,7 +930,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <button type="submit" class="evg-btn-save" style="padding: 10px; font-size: 12px;">
-                            + <?php esc_html_e( 'Add Card', 'evg-platform' ); ?>
+                            + <?php esc_html_e( 'Add Card & Recalculate Total', 'evg-platform' ); ?>
                         </button>
                     </form>
                 </div>
@@ -941,7 +974,7 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         <input type="hidden" name="submission_id" value="<?php echo esc_attr( $submission->id ); ?>">
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Stage', 'evg-platform' ); ?></label>
+                            <label><?php esc_html_e( 'Pipeline Stage', 'evg-platform' ); ?></label>
                             <select name="current_stage" class="evg-field-control">
                                 <?php foreach ( $stages as $stg_key => $stg_label ) : ?>
                                     <option value="<?php echo esc_attr( $stg_key ); ?>" <?php selected( $submission->current_stage, $stg_key ); ?>>
@@ -952,7 +985,24 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Payment', 'evg-platform' ); ?></label>
+                            <label><?php esc_html_e( 'Service Speed Tier', 'evg-platform' ); ?></label>
+                            <select name="service_type" class="evg-field-control">
+                                <option value="Standard" <?php selected( $submission->service_type, 'Standard' ); ?>><?php esc_html_e( 'Standard (5-10 Business Days) - £0.00', 'evg-platform' ); ?></option>
+                                <option value="Express" <?php selected( $submission->service_type, 'Express' ); ?>><?php esc_html_e( 'Express Speed (+£4.99/card)', 'evg-platform' ); ?></option>
+                            </select>
+                        </div>
+
+                        <div class="evg-field-group">
+                            <label><?php esc_html_e( 'Label Specification', 'evg-platform' ); ?></label>
+                            <select name="label_option" class="evg-field-control">
+                                <option value="Standard Label" <?php selected( $submission->label_option, 'Standard Label' ); ?>><?php esc_html_e( 'Standard Label (+£0.00)', 'evg-platform' ); ?></option>
+                                <option value="Custom Gold Foil Label" <?php selected( $submission->label_option, 'Custom Gold Foil Label' ); ?>><?php esc_html_e( 'Gold Foil Label (+£2.99/card)', 'evg-platform' ); ?></option>
+                                <option value="Vault Door Edition" <?php selected( $submission->label_option, 'Vault Door Edition' ); ?>><?php esc_html_e( 'Vault Door Edition (+£2.99/card)', 'evg-platform' ); ?></option>
+                            </select>
+                        </div>
+
+                        <div class="evg-field-group">
+                            <label><?php esc_html_e( 'Payment Status', 'evg-platform' ); ?></label>
                             <select name="payment_status" class="evg-field-control">
                                 <option value="Pending" <?php selected( $submission->payment_status, 'Pending' ); ?>><?php esc_html_e( 'Pending', 'evg-platform' ); ?></option>
                                 <option value="Paid" <?php selected( $submission->payment_status, 'Paid' ); ?>><?php esc_html_e( 'Paid', 'evg-platform' ); ?></option>
@@ -962,17 +1012,23 @@ function evg_render_pro_single_submission( $sub_id, $table_submissions, $table_c
                         </div>
 
                         <div class="evg-field-group">
-                            <label><?php esc_html_e( 'Tracking', 'evg-platform' ); ?></label>
-                            <input type="text" name="return_tracking" class="evg-field-control" placeholder="<?php esc_attr_e( 'e.g. Royal Mail Special Delivery #', 'evg-platform' ); ?>" value="<?php echo esc_attr( $submission->return_tracking ); ?>">
+                            <label><?php esc_html_e( 'Authorized Total (£)', 'evg-platform' ); ?></label>
+                            <input type="number" step="0.01" name="total_amount" class="evg-field-control" value="<?php echo esc_attr( number_format( (float) $submission->total_amount, 2, '.', '' ) ); ?>">
+                            <span style="font-size: 10px; color: #8e8e93; display: block; margin-top: 4px;"><?php esc_html_e( 'Base £9.99/card + label upgrades + flat return shipping.', 'evg-platform' ); ?></span>
+                        </div>
+
+                        <div class="evg-field-group">
+                            <label><?php esc_html_e( 'Return Royal Mail Tracking #', 'evg-platform' ); ?></label>
+                            <input type="text" name="return_tracking" class="evg-field-control" placeholder="<?php esc_attr_e( 'e.g. GB123456789RM', 'evg-platform' ); ?>" value="<?php echo esc_attr( $submission->return_tracking ); ?>">
                         </div>
 
                         <button type="submit" class="evg-btn-save">
-                            <?php esc_html_e( 'Update', 'evg-platform' ); ?>
+                            <?php esc_html_e( 'Update Order', 'evg-platform' ); ?>
                         </button>
                     </form>
 
                     <a href="<?php echo esc_url( admin_url( 'admin-post.php?action=evg_download_invoice&submission_id=' . $submission->id ) ); ?>" target="_blank" class="evg-btn-invoice">
-                        📄 <?php esc_html_e( 'Invoice', 'evg-platform' ); ?>
+                        📄 <?php esc_html_e( 'Download Packing Manifest / Invoice', 'evg-platform' ); ?>
                     </a>
                 </div>
             </div>

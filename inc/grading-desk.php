@@ -1,7 +1,8 @@
 <?php
 /**
  * EVG Module: Grading Desk (Pro Edition)
- * Terminal for precision grading assessments, category sub-scores, and photo evidence logging.
+ * Terminal for precision grading assessments, category sub-scores, batch fault photo uploader,
+ * and client free preview designations (strict max 3 free previews before £0.99 paywall).
  * Pagination configured to 5 items per page.
  */
 
@@ -25,7 +26,7 @@ function evg_grading_desk_tab() {
     $table_submissions = $wpdb->prefix . 'evg_submissions';
 
     // ---------------------------------------------------------
-    // Handle Form Submissions (Saving Grade & Evidence)
+    // Handle Form Submissions (Saving Grade, Faults & Free Previews)
     // ---------------------------------------------------------
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_save_grade_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_save_grade_nonce'] ), 'evg_save_grade' ) ) {
@@ -42,7 +43,7 @@ function evg_grading_desk_tab() {
 
             $current_user_id = get_current_user_id();
 
-            // 1. Insert or Update the Assessment Record
+            // 1. Insert or Update Assessment Record
             $existing_assessment = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table_assessments} WHERE card_id = %d", $card_id ) );
 
             if ( $existing_assessment ) {
@@ -82,24 +83,36 @@ function evg_grading_desk_tab() {
                 $assessment_id = $wpdb->insert_id;
             }
 
-            // 2. Sync Fault Evidence Images
-            $wpdb->delete( $table_faults, array( 'assessment_id' => $assessment_id ), array( '%d' ) );
+            // 2. Sync Fault Evidence Images & Apply Max 3 Free Previews
+            $wpdb->delete( $table_faults, array( 'card_id' => $card_id ), array( '%d' ) );
+
             if ( isset( $_POST['fault_images'] ) && is_array( $_POST['fault_images'] ) ) {
-                $fault_types = isset( $_POST['fault_types'] ) && is_array( $_POST['fault_types'] ) ? $_POST['fault_types'] : array();
+                $fault_types       = isset( $_POST['fault_types'] ) && is_array( $_POST['fault_types'] ) ? $_POST['fault_types'] : array();
+                $raw_free_previews = isset( $_POST['free_preview_indices'] ) && is_array( $_POST['free_preview_indices'] ) ? array_map( 'intval', $_POST['free_preview_indices'] ) : array();
+
+                // Enforce max 3 free preview selections
+                if ( count( $raw_free_previews ) > 3 ) {
+                    $raw_free_previews = array_slice( $raw_free_previews, 0, 3 );
+                }
+
                 foreach ( $_POST['fault_images'] as $index => $fault_url ) {
-                    $clean_url  = esc_url_raw( wp_unslash( $fault_url ) );
-                    $fault_type = isset( $fault_types[$index] ) ? sanitize_text_field( wp_unslash( $fault_types[$index] ) ) : 'Imperfection';
+                    $clean_url       = esc_url_raw( wp_unslash( $fault_url ) );
+                    $fault_type      = isset( $fault_types[$index] ) ? sanitize_text_field( wp_unslash( $fault_types[$index] ) ) : 'Surface Scratch';
+                    $is_free_preview = in_array( (int) $index, $raw_free_previews, true ) ? 1 : 0;
+
                     if ( ! empty( $clean_url ) ) {
                         $wpdb->insert(
                             $table_faults,
                             array(
-                                'assessment_id' => $assessment_id,
-                                'fault_type'    => $fault_type,
-                                'image_url'     => $clean_url,
-                                'notes'         => '',
-                                'created_at'    => current_time( 'mysql' )
+                                'assessment_id'   => $assessment_id,
+                                'card_id'         => $card_id,
+                                'fault_type'      => $fault_type,
+                                'image_url'       => $clean_url,
+                                'is_free_preview' => $is_free_preview,
+                                'notes'           => '',
+                                'created_at'      => current_time( 'mysql' )
                             ),
-                            array( '%d', '%s', '%s', '%s', '%s' )
+                            array( '%d', '%d', '%s', '%s', '%d', '%s', '%s' )
                         );
                     }
                 }
@@ -117,14 +130,14 @@ function evg_grading_desk_tab() {
                 array( '%d' )
             );
 
-            // 4. Update Submission Pipeline Stage if all cards completed
-            $ungraded = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status NOT IN ('Quality Control', 'Encapsulated')", $submission_id ) );
+            // 4. Update Submission Pipeline Stage if all cards are completed
+            $ungraded = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status NOT IN ('Quality Control', 'Encapsulation', 'Completed')", $submission_id ) );
             if ( $ungraded === 0 ) {
                 $wpdb->update( $table_submissions, array( 'current_stage' => 'Quality Control' ), array( 'id' => $submission_id ) );
             }
 
             if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                Elite_Vault_Grading_System::log_activity( "Assessed Card ID {$card_id} with Final Grade EVG {$final_grade}." );
+                Elite_Vault_Grading_System::log_activity( "Assessed Card ID {$card_id} with Final Grade EVG {$final_grade} and updated damage portfolio." );
             }
             
             $redirect_url = admin_url( 'admin.php?page=evg_tab_grading-desk&graded=1' );
@@ -139,7 +152,7 @@ function evg_grading_desk_tab() {
     }
 
     if ( isset( $_GET['graded'] ) ) {
-        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Assessment successfully sealed. Card dispatched to Quality Control.', 'evg-platform' ) . '</p></div>';
+        echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Assessment and damage portfolio successfully sealed. Card dispatched to Quality Control.', 'evg-platform' ) . '</p></div>';
     }
 
     // ---------------------------------------------------------
@@ -284,7 +297,7 @@ function evg_render_pro_grading_queue( $table_cards, $table_submissions ) {
             color: #000000 !important;
         }
 
-        /* DataTables Custom UI Styling */
+        /* DataTables UI Customizations */
         .dataTables_wrapper .dataTables_paginate {
             display: flex;
             align-items: center;
@@ -426,7 +439,7 @@ function evg_render_pro_grading_queue( $table_cards, $table_submissions ) {
 }
 
 /**
- * Terminal View: Assessment Console & Evidence Uploader
+ * Terminal View: Assessment Console, Multi-Photo Uploader & Free Preview Selector
  */
 function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submissions, $table_assessments, $table_faults ) {
     global $wpdb;
@@ -438,22 +451,24 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
     }
 
     $assessment = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_assessments} WHERE card_id = %d", $card_id ) );
-    $faults     = $assessment ? $wpdb->get_results( $wpdb->prepare( "SELECT image_url, fault_type FROM {$table_faults} WHERE assessment_id = %d", $assessment->id ) ) : array();
+    $faults     = $wpdb->get_results( $wpdb->prepare( "SELECT image_url, fault_type, is_free_preview FROM {$table_faults} WHERE card_id = %d ORDER BY id ASC", $card_id ) );
 
     $fault_types_available = array(
-        'Whitening'           => __( 'Whitening', 'evg-platform' ),
-        'Scratches'           => __( 'Scratches', 'evg-platform' ),
-        'Print lines'         => __( 'Print Lines', 'evg-platform' ),
-        'Surface damage'      => __( 'Surface Damage', 'evg-platform' ),
-        'Corner imperfection' => __( 'Corner Imperfection', 'evg-platform' ),
-        'Edge wear'           => __( 'Edge Wear', 'evg-platform' ),
-        'Other'               => __( 'Other Fault', 'evg-platform' )
+        'Surface Scratch'      => __( 'Surface Scratch', 'evg-platform' ),
+        'Edge Whitening'       => __( 'Edge Whitening', 'evg-platform' ),
+        'Corner Dent'          => __( 'Corner Dent', 'evg-platform' ),
+        'Holo Print Line'      => __( 'Holo Print Line', 'evg-platform' ),
+        'Centering Imbalance'  => __( 'Centering Imbalance', 'evg-platform' ),
+        'Surface Damage'       => __( 'Surface Damage', 'evg-platform' ),
+        'Corner Imperfection'  => __( 'Corner Imperfection', 'evg-platform' ),
+        'Edge Wear'            => __( 'Edge Wear', 'evg-platform' ),
+        'Other'                => __( 'Other Fault', 'evg-platform' )
     );
     ?>
     <style>
         .evg-terminal-layout {
             display: grid;
-            grid-template-columns: 340px 1fr;
+            grid-template-columns: 360px 1fr;
             gap: 24px;
             align-items: start;
         }
@@ -604,6 +619,7 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
             border-color: #d4af37;
         }
 
+        /* Defect Portfolio & Free Preview Selector Styles */
         .evg-fault-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -615,30 +631,67 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
             background: #141416;
             border: 1px solid #2a2a2e;
             border-radius: 8px;
-            padding: 8px;
+            padding: 10px;
             display: flex;
-            gap: 10px;
+            gap: 12px;
             align-items: center;
+            transition: border-color 0.2s ease;
+        }
+        .evg-fault-cell.is-preview-active {
+            border-color: rgba(212, 175, 55, 0.4);
+            background: #17171a;
         }
         .evg-fault-cell img {
-            width: 60px;
-            height: 60px;
+            width: 64px;
+            height: 64px;
             object-fit: cover;
-            border-radius: 4px;
+            border-radius: 6px;
             flex-shrink: 0;
+            border: 1px solid #222;
+        }
+        .evg-fault-meta {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
         }
         .evg-fault-cell select {
             background: #0a0a0a;
             border: 1px solid #28282b;
             color: #d4af37;
-            padding: 4px 8px;
+            padding: 5px 8px;
             font-size: 11px;
             border-radius: 4px;
             width: 100%;
+            outline: none;
         }
+        .evg-preview-toggle-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .evg-preview-toggle-wrap input[type="checkbox"] {
+            margin: 0;
+            accent-color: #d4af37;
+            cursor: pointer;
+        }
+        .evg-preview-toggle-wrap span {
+            font-size: 11px;
+            font-weight: 700;
+            color: #8e8e93;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .evg-preview-toggle-wrap input[type="checkbox"]:checked + span {
+            color: #d4af37;
+        }
+
         .evg-fault-cell .btn-del-img {
-            width: 22px;
-            height: 22px;
+            width: 24px;
+            height: 24px;
             background: rgba(0, 0, 0, 0.85);
             border: 1px solid #ff453a;
             color: #ff453a;
@@ -647,9 +700,14 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 11px;
+            font-size: 12px;
             font-weight: bold;
             flex-shrink: 0;
+            transition: all 0.2s ease;
+        }
+        .evg-fault-cell .btn-del-img:hover {
+            background: #ff453a;
+            color: #ffffff;
         }
 
         .evg-btn-submit {
@@ -669,6 +727,17 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
         .evg-btn-submit:hover {
             background: #f3e5ab;
             box-shadow: 0 6px 20px rgba(212, 175, 55, 0.3);
+        }
+
+        .evg-counter-badge {
+            background: #1a1a1d;
+            border: 1px solid #2c2c30;
+            color: #d4af37;
+            font-size: 10px;
+            font-weight: 800;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-family: monospace;
         }
 
         @media (max-width: 980px) {
@@ -691,13 +760,13 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
         </div>
     </div>
 
-    <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_grading-desk' ) ); ?>">
+    <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_grading-desk' ) ); ?>" id="evg-grading-form">
         <?php wp_nonce_field( 'evg_save_grade', 'evg_save_grade_nonce' ); ?>
         <input type="hidden" name="card_id" value="<?php echo esc_attr( $card->id ); ?>">
         <input type="hidden" name="submission_id" value="<?php echo esc_attr( $card->submission_id ); ?>">
 
         <div class="evg-terminal-layout">
-            <!-- Sidebar: Identity & Evidence -->
+            <!-- Sidebar: Specification & Fault Evidence -->
             <div>
                 <div class="evg-card-box">
                     <div class="evg-card-box-header">
@@ -722,35 +791,42 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                     </div>
                 </div>
 
-                <!-- Fault Evidence Panel -->
+                <!-- Fault Evidence Panel With Free Preview Checks -->
                 <div class="evg-card-box" style="margin-top: 20px;">
                     <div class="evg-card-box-header">
                         <h2><?php esc_html_e( 'Fault & Defect Evidence', 'evg-platform' ); ?></h2>
+                        <span id="evg-free-counter" class="evg-counter-badge">0/3 Free Previews</span>
                     </div>
                     <div class="evg-card-box-body">
-                        <p style="font-size: 11px; color: #8e8e93; margin: 0 0 12px 0;">
-                            <?php esc_html_e( 'Upload high-resolution macro imagery of whitening, silvering, print lines, or scratches for the transparency report.', 'evg-platform' ); ?>
+                        <p style="font-size: 11px; color: #8e8e93; margin: 0 0 12px 0; line-height: 1.5;">
+                            <?php esc_html_e( 'Upload defect scans at once. Check up to 3 for free preview; remaining scans blur behind the £0.99 unlock paywall.', 'evg-platform' ); ?>
                         </p>
 
                         <div id="evg-fault-preview-container" class="evg-fault-grid">
                             <?php if ( ! empty( $faults ) ) : ?>
-                                <?php foreach ( $faults as $fault ) : ?>
-                                    <div class="evg-fault-cell">
+                                <?php foreach ( $faults as $index => $fault ) : ?>
+                                    <div class="evg-fault-cell <?php echo $fault->is_free_preview ? 'is-preview-active' : ''; ?>">
                                         <img src="<?php echo esc_url( $fault->image_url ); ?>" alt="Fault Evidence">
-                                        <input type="hidden" name="fault_images[]" value="<?php echo esc_attr( $fault->image_url ); ?>">
-                                        <select name="fault_types[]">
-                                            <?php foreach ( $fault_types_available as $ft_key => $ft_label ) : ?>
-                                                <option value="<?php echo esc_attr( $ft_key ); ?>" <?php selected( $fault->fault_type, $ft_key ); ?>><?php echo esc_html( $ft_label ); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                        <button type="button" class="btn-del-img">✕</button>
+                                        <div class="evg-fault-meta">
+                                            <input type="hidden" name="fault_images[<?php echo esc_attr( $index ); ?>]" value="<?php echo esc_attr( $fault->image_url ); ?>">
+                                            <select name="fault_types[<?php echo esc_attr( $index ); ?>]">
+                                                <?php foreach ( $fault_types_available as $ft_key => $ft_label ) : ?>
+                                                    <option value="<?php echo esc_attr( $ft_key ); ?>" <?php selected( $fault->fault_type, $ft_key ); ?>><?php echo esc_html( $ft_label ); ?></option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                            <label class="evg-preview-toggle-wrap">
+                                                <input type="checkbox" name="free_preview_indices[]" value="<?php echo esc_attr( $index ); ?>" class="evg-preview-checkbox" <?php checked( $fault->is_free_preview, 1 ); ?>>
+                                                <span><?php esc_html_e( 'Free Preview (Max 3)', 'evg-platform' ); ?></span>
+                                            </label>
+                                        </div>
+                                        <button type="button" class="btn-del-img" title="<?php esc_attr_e( 'Remove Photo', 'evg-platform' ); ?>">✕</button>
                                     </div>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </div>
 
-                        <button type="button" id="evg-upload-fault" class="evg-btn-submit" style="background: #1c1c1f; color: #d4af37; border: 1px solid #2c2c30; padding: 10px; font-size: 12px;">
-                            + <?php esc_html_e( 'Attach Defect Photo', 'evg-platform' ); ?>
+                        <button type="button" id="evg-upload-fault" class="evg-btn-submit" style="background: #1c1c1f; color: #d4af37; border: 1px solid #2c2c30; padding: 11px; font-size: 12px; margin-top: 4px;">
+                            + <?php esc_html_e( 'Batch Upload Defect Photos', 'evg-platform' ); ?>
                         </button>
                     </div>
                 </div>
@@ -836,42 +912,89 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                 echo $opts;
             ?>';
 
+            // Function to synchronize free preview badge count
+            function updateFreePreviewCounter() {
+                var checkedCount = $('.evg-preview-checkbox:checked').length;
+                $('#evg-free-counter').text(checkedCount + '/3 Free Previews');
+            }
+            updateFreePreviewCounter();
+
+            // Strict limit of up to 3 free previews
+            $(document).on('change', '.evg-preview-checkbox', function() {
+                var checkedCount = $('.evg-preview-checkbox:checked').length;
+                if (checkedCount > 3) {
+                    alert('<?php echo esc_js( __( 'You can only select up to 3 free preview images. The remaining images will automatically blur behind the £0.99 portfolio paywall.', 'evg-platform' ) ); ?>');
+                    $(this).prop('checked', false);
+                }
+                if ($(this).is(':checked')) {
+                    $(this).closest('.evg-fault-cell').addClass('is-preview-active');
+                } else {
+                    $(this).closest('.evg-fault-cell').removeClass('is-preview-active');
+                }
+                updateFreePreviewCounter();
+            });
+
+            // Re-index all uploaded photo elements to maintain contiguous array mapping
+            function reindexFaultElements() {
+                $('#evg-fault-preview-container .evg-fault-cell').each(function(idx) {
+                    $(this).find('input[type="hidden"]').attr('name', 'fault_images[' + idx + ']');
+                    $(this).find('select').attr('name', 'fault_types[' + idx + ']');
+                    $(this).find('.evg-preview-checkbox').val(idx);
+                });
+                updateFreePreviewCounter();
+            }
+
             var custom_uploader;
             $('#evg-upload-fault').click(function(e) {
                 e.preventDefault();
                 if (custom_uploader) { custom_uploader.open(); return; }
                 custom_uploader = wp.media({
                     title: '<?php esc_attr_e( 'Upload Defect Imagery', 'evg-platform' ); ?>',
-                    button: { text: '<?php esc_attr_e( 'Attach Image', 'evg-platform' ); ?>' },
-                    multiple: false
+                    button: { text: '<?php esc_attr_e( 'Attach Images', 'evg-platform' ); ?>' },
+                    multiple: true // Batch upload supported
                 });
                 custom_uploader.on('select', function() {
-                    var attachment = custom_uploader.state().get('selection').first().toJSON();
-                    var html = '<div class="evg-fault-cell">' +
-                               '<img src="' + attachment.url + '" alt="Defect">' +
-                               '<input type="hidden" name="fault_images[]" value="' + attachment.url + '">' +
-                               '<select name="fault_types[]">' + faultTypesOptions + '</select>' +
-                               '<button type="button" class="btn-del-img">✕</button>' +
-                               '</div>';
-                    $('#evg-fault-preview-container').append(html);
+                    var selection = custom_uploader.state().get('selection');
+                    selection.each(function(attachment) {
+                        var attJSON = attachment.toJSON();
+                        var nextIdx = $('#evg-fault-preview-container .evg-fault-cell').length;
+                        var autoCheck = ($('.evg-preview-checkbox:checked').length < 3) ? 'checked' : '';
+                        var activeClass = autoCheck ? 'is-preview-active' : '';
+
+                        var html = '<div class="evg-fault-cell ' + activeClass + '">' +
+                                       '<img src="' + attJSON.url + '" alt="Defect">' +
+                                       '<div class="evg-fault-meta">' +
+                                           '<input type="hidden" name="fault_images[' + nextIdx + ']" value="' + attJSON.url + '">' +
+                                           '<select name="fault_types[' + nextIdx + ']">' + faultTypesOptions + '</select>' +
+                                           '<label class="evg-preview-toggle-wrap">' +
+                                               '<input type="checkbox" name="free_preview_indices[]" value="' + nextIdx + '" class="evg-preview-checkbox" ' + autoCheck + '>' +
+                                               '<span><?php esc_html_e( 'Free Preview (Max 3)', 'evg-platform' ); ?></span>' +
+                                           '</label>' +
+                                       '</div>' +
+                                       '<button type="button" class="btn-del-img" title="<?php esc_attr_e( 'Remove Photo', 'evg-platform' ); ?>">✕</button>' +
+                                   '</div>';
+                        $('#evg-fault-preview-container').append(html);
+                    });
+                    reindexFaultElements();
                 });
                 custom_uploader.open();
             });
 
             $(document).on('click', '.btn-del-img', function(){
                 $(this).closest('.evg-fault-cell').remove();
+                reindexFaultElements();
             });
 
             // Calculate whole number floor suggestion
             $('.sub-calc').on('input change', function() {
-                var c = parseInt($('#sub_centre').val()) || 0;
+                var c  = parseInt($('#sub_centre').val()) || 0;
                 var cr = parseInt($('#sub_corner').val()) || 0;
-                var e = parseInt($('#sub_edge').val()) || 0;
-                var s = parseInt($('#sub_surface').val()) || 0;
+                var e  = parseInt($('#sub_edge').val()) || 0;
+                var s  = parseInt($('#sub_surface').val()) || 0;
 
                 if (c > 0 && cr > 0 && e > 0 && s > 0) {
-                    var lowest = Math.min(c, cr, e, s);
-                    var avg = Math.round((c + cr + e + s) / 4);
+                    var lowest    = Math.min(c, cr, e, s);
+                    var avg       = Math.round((c + cr + e + s) / 4);
                     var suggested = Math.min(avg, lowest + 1);
                     if (!$('#evg_final_grade_select').val()) {
                         $('#evg_final_grade_select').val(suggested);

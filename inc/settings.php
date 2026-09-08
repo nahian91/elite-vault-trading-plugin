@@ -1,7 +1,8 @@
 <?php
 /**
  * EVG Module: Settings (Pro Edition)
- * Global platform configuration, pricing tiers, turnaround times, transparency controls, and submission status toggles.
+ * Global platform configuration, pricing tiers, turnaround times, transparency controls,
+ * submission status toggles, and £0.99 damage portfolio unlock fee management.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -30,11 +31,12 @@ function evg_settings_tab() {
 
             // General Information & Support
             update_option( 'evg_support_email', sanitize_email( wp_unslash( $_POST['evg_support_email'] ?? '' ) ) );
-            update_option( 'evg_turnaround_time', sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ?? '' ) ) );
+            update_option( 'evg_turnaround_time', sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ?? '5-10 Business Days' ) ) );
 
             // Pricing Configuration Matrix
-            update_option( 'evg_price_standard', floatval( $_POST['evg_price_standard'] ?? 0 ) );
+            update_option( 'evg_price_standard', floatval( $_POST['evg_price_standard'] ?? 9.99 ) );
             update_option( 'evg_price_premium_upgrade', floatval( $_POST['evg_price_premium_upgrade'] ?? 0 ) );
+            update_option( 'evg_portfolio_unlock_fee', floatval( $_POST['evg_portfolio_unlock_fee'] ?? 0.99 ) );
 
             // Additional Configuration Tiers
             update_option( 'evg_max_cards_per_submission', absint( $_POST['evg_max_cards_per_submission'] ?? 50 ) );
@@ -66,9 +68,10 @@ function evg_settings_tab() {
     $accept_submissions  = get_option( 'evg_accept_submissions', 'yes' );
     $enable_transparency = get_option( 'evg_transparency_enabled', 'yes' );
     $support_email       = get_option( 'evg_support_email', 'elitevaultgrading@gmail.com' );
-    $turnaround_time     = get_option( 'evg_turnaround_time', '30-45 Business Days' );
-    $price_standard      = get_option( 'evg_price_standard', '15.00' );
-    $price_premium       = get_option( 'evg_price_premium_upgrade', '5.00' );
+    $turnaround_time     = get_option( 'evg_turnaround_time', '5-10 Business Days' );
+    $price_standard      = get_option( 'evg_price_standard', '9.99' );
+    $price_premium       = get_option( 'evg_price_premium_upgrade', '2.99' );
+    $unlock_fee          = get_option( 'evg_portfolio_unlock_fee', '0.99' );
     $max_cards           = get_option( 'evg_max_cards_per_submission', '50' );
     $shipping_fee        = get_option( 'evg_return_shipping_fee', '9.99' );
     $announcement        = get_option( 'evg_announcement_banner', '' );
@@ -324,7 +327,7 @@ function evg_settings_tab() {
                         <div class="evg-input-group">
                             <label><?php esc_html_e( 'Estimated Turnaround Time', 'evg-platform' ); ?></label>
                             <input type="text" name="evg_turnaround_time" class="evg-field-control" value="<?php echo esc_attr( $turnaround_time ); ?>" required>
-                            <p class="evg-help-text"><?php esc_html_e( 'Displayed dynamically on customer pre-order forms and portal pages.', 'evg-platform' ); ?></p>
+                            <p class="evg-help-text"><?php esc_html_e( 'Displayed dynamically on customer intake forms and portal pages (Standard: 5-10 Business Days).', 'evg-platform' ); ?></p>
                         </div>
                     </div>
                 </div>
@@ -338,7 +341,7 @@ function evg_settings_tab() {
                     </div>
                     <div class="evg-set-box-body">
                         <p style="color:var(--evg-text-muted); font-size:12px; margin:0 0 20px 0; line-height:1.5;">
-                            <?php esc_html_e( 'Base rates are automatically computed at customer checkout. Shipping is inclusive of the calculated base unit rates.', 'evg-platform' ); ?>
+                            <?php esc_html_e( 'Base rates are automatically computed at customer checkout. Submissions start from £9.99.', 'evg-platform' ); ?>
                         </p>
 
                         <div class="evg-input-group">
@@ -347,7 +350,7 @@ function evg_settings_tab() {
                                 <span style="position: absolute; left: 14px; top: 12px; color: var(--evg-text-muted); font-weight: 700; font-size: 13px;">&pound;</span>
                                 <input type="number" name="evg_price_standard" class="evg-field-control" min="0.00" step="0.01" value="<?php echo esc_attr( number_format( (float) $price_standard, 2, '.', '' ) ); ?>" style="padding-left: 28px;" required>
                             </div>
-                            <p class="evg-help-text"><?php esc_html_e( 'Standard cost per card unit including the default Elite Vault Grading label.', 'evg-platform' ); ?></p>
+                            <p class="evg-help-text"><?php esc_html_e( 'Standard cost per card unit including the default Elite Vault Grading label (Standard base rate from £9.99).', 'evg-platform' ); ?></p>
                         </div>
 
                         <div class="evg-input-group">
@@ -357,7 +360,18 @@ function evg_settings_tab() {
                                 <input type="number" name="evg_price_premium_upgrade" class="evg-field-control" min="0.00" step="0.01" value="<?php echo esc_attr( number_format( (float) $price_premium, 2, '.', '' ) ); ?>" style="padding-left: 36px; border-color: rgba(212, 175, 55, 0.3);" required>
                             </div>
                             <p class="evg-help-text" style="color: var(--evg-gold);">
-                                <?php esc_html_e( 'Additional fee per card unit when opting for custom labels (Shield, Circle, or Vault door designs).', 'evg-platform' ); ?>
+                                <?php esc_html_e( 'Additional fee per card unit when opting for custom labels (Gold Foil, Shield, Circle, or Vault door designs).', 'evg-platform' ); ?>
+                            </p>
+                        </div>
+
+                        <div class="evg-input-group">
+                            <label><?php esc_html_e( 'Full Damage Portfolio Unlock Fee (£)', 'evg-platform' ); ?></label>
+                            <div style="position: relative;">
+                                <span style="position: absolute; left: 14px; top: 12px; color: var(--evg-gold); font-weight: 700; font-size: 13px;">&pound;</span>
+                                <input type="number" name="evg_portfolio_unlock_fee" class="evg-field-control" min="0.00" step="0.01" value="<?php echo esc_attr( number_format( (float) $unlock_fee, 2, '.', '' ) ); ?>" style="padding-left: 28px; border-color: rgba(212, 175, 55, 0.3);" required>
+                            </div>
+                            <p class="evg-help-text" style="color: var(--evg-gold);">
+                                <?php esc_html_e( 'Micro-fee charged to unlock high-resolution damage portfolio scans beyond the 3 free preview photos (Standard: £0.99).', 'evg-platform' ); ?>
                             </p>
                         </div>
                     </div>
