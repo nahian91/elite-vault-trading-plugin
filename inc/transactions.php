@@ -16,7 +16,10 @@ function evg_transactions_tab() {
     }
 
     global $wpdb;
+
     $table_submissions = $wpdb->prefix . 'evg_submissions';
+    $table_orders      = $wpdb->prefix . 'evg_orders';
+    $table_unlocks     = $wpdb->prefix . 'evg_portfolio_unlocks';
 
     // ---------------------------------------------------------
     // Handle Form Submissions (Update Transaction Status)
@@ -24,19 +27,23 @@ function evg_transactions_tab() {
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_payment_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_payment_nonce'] ), 'evg_update_payment' ) ) {
             
-            $sub_id         = absint( $_POST['submission_id'] ?? 0 );
-            $payment_status = sanitize_text_field( wp_unslash( $_POST['payment_status'] ?? 'Pending' ) );
+            $sub_id         = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
+            $raw_status     = isset( $_POST['payment_status'] ) ? sanitize_text_field( wp_unslash( $_POST['payment_status'] ) ) : 'Pending';
+            $allowed_status = array( 'Pending', 'Paid', 'Partial Refund', 'Refunded', 'Failed' );
+            $payment_status = in_array( $raw_status, $allowed_status, true ) ? $raw_status : 'Pending';
 
-            $wpdb->update(
-                $table_submissions,
-                array( 'payment_status' => $payment_status ),
-                array( 'id' => $sub_id ),
-                array( '%s' ),
-                array( '%d' )
-            );
+            if ( $sub_id > 0 ) {
+                $wpdb->update(
+                    $table_submissions,
+                    array( 'payment_status' => $payment_status ),
+                    array( 'id' => $sub_id ),
+                    array( '%s' ),
+                    array( '%d' )
+                );
 
-            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                Elite_Vault_Grading_System::log_activity( "Updated Payment Status for Order ID {$sub_id} to: {$payment_status}" );
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "Updated Payment Status for Order ID {$sub_id} to: {$payment_status}" );
+                }
             }
 
             $redirect_url = admin_url( 'admin.php?page=evg_tab_transactions&tx_updated=1' );
@@ -55,7 +62,7 @@ function evg_transactions_tab() {
     }
 
     // ---------------------------------------------------------
-    // Fetch All Transaction Entries & Compute Accurate Totals
+    // Fetch Submissions Ledger
     // ---------------------------------------------------------
     $transactions = $wpdb->get_results( "
         SELECT s.id, s.order_number, s.submission_date, s.total_amount, s.payment_status, s.current_stage, s.total_cards, s.service_type, u.display_name, u.user_email 
@@ -64,20 +71,16 @@ function evg_transactions_tab() {
         ORDER BY s.id DESC
     " );
 
-    $total_revenue  = 0;
-    $total_pending  = 0;
-    $total_refunded = 0;
+    // ---------------------------------------------------------
+    // Compute Financial Metrics Across Entire Platform
+    // ---------------------------------------------------------
+    $sub_revenue  = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$table_submissions} WHERE payment_status = 'Paid'" );
+    $mkt_revenue  = (float) $wpdb->get_var( "SELECT COALESCE(SUM(amount_paid), 0) FROM {$table_orders} WHERE payment_status = 'Paid'" );
+    $paywall_rev  = (float) $wpdb->get_var( "SELECT COALESCE(SUM(amount_paid), 0) FROM {$table_unlocks} WHERE payment_status = 'Completed'" );
+    $total_revenue = $sub_revenue + $mkt_revenue + $paywall_rev;
 
-    foreach ( $transactions as $tx ) {
-        $amount = floatval( $tx->total_amount );
-        if ( 'Paid' === $tx->payment_status ) {
-            $total_revenue += $amount;
-        } elseif ( 'Pending' === $tx->payment_status ) {
-            $total_pending += $amount;
-        } elseif ( 'Refunded' === $tx->payment_status || 'Partial Refund' === $tx->payment_status ) {
-            $total_refunded += $amount;
-        }
-    }
+    $total_pending = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$table_submissions} WHERE payment_status = 'Pending'" );
+    $total_refunded = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$table_submissions} WHERE payment_status IN ('Refunded', 'Partial Refund')" );
     ?>
 
     <style>
@@ -348,7 +351,7 @@ function evg_transactions_tab() {
                 <svg style="fill: #34c759;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><path d="M160 0c17.7 0 32 14.3 32 32V67.7c1.6 .2 3.1 .4 4.7 .7c.4 .1 .9 .1 1.3 .2l10.1 2.8c58.6 16 104.1 70.1 106 130.5c.3 11-8.4 20.3-19.5 20.3H253.2c-10.4 0-19.1-8-19.8-18.4c-1.3-19.4-12.8-35.8-31.5-44.4c-11.8-5.5-25.2-7.5-38.3-5.6C153 155.3 144 163.6 144 174.1c0 9.2 6.1 17.3 14.9 20l25.8 7.7c33.3 10 63.3 27.5 87 50.9c25.4 25.1 40.3 59.9 40.3 97.4c0 62.5-43.7 114.9-104 126.9V512c0 17.7-14.3 32-32 32s-32-14.3-32-32V444.3c-1.6-.2-3.1-.4-4.7-.7c-.4-.1-.9-.1-1.3-.2l-10.1-2.8c-58.6-16-104.1-70.1-106-130.5c-.3-11 8.4-20.3 19.5-20.3H81.2c10.4 0 19.1 8 19.8 18.4c1.3 19.4 12.8 35.8 31.5 44.4c11.8 5.5 25.2 7.5 38.3 5.6C181.4 356.7 190.4 348.4 190.4 338c0-9.2-6.1-17.3-14.9-20l-25.8-7.7C116.3 300.3 86.4 282.8 62.6 259.4C37.2 234.3 22.4 199.5 22.4 162c0-62.5 43.7-114.9 104-126.9V32c0-17.7 14.3-32 32-32z"/></svg>
             </div>
             <div class="evg-stat-content">
-                <h3 style="color: #34c759;">&pound;<?php echo esc_html( number_format( $total_revenue, 2 ) ); ?></h3>
+                <h3 style="color: #34c759;">&pound;<?php echo esc_html( number_format( (float) $total_revenue, 2 ) ); ?></h3>
                 <p><?php esc_html_e( 'Settled Revenue', 'evg-platform' ); ?></p>
             </div>
         </div>
@@ -358,7 +361,7 @@ function evg_transactions_tab() {
                 <svg style="fill: #ff9f0a;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M256 0a256 256 0 1 1 0 512A256 256 0 1 1 256 0zM232 120V256c0 8 4 15.5 10.7 20l96 64c11 7.4 25.9 4.4 33.3-6.7s4.4-25.9-6.7-33.3L280 243.2V120c0-13.3-10.7-24-24-24s-24 10.7-24 24z"/></svg>
             </div>
             <div class="evg-stat-content">
-                <h3 style="color: #ff9f0a;">&pound;<?php echo esc_html( number_format( $total_pending, 2 ) ); ?></h3>
+                <h3 style="color: #ff9f0a;">&pound;<?php echo esc_html( number_format( (float) $total_pending, 2 ) ); ?></h3>
                 <p><?php esc_html_e( 'Pending Invoices', 'evg-platform' ); ?></p>
             </div>
         </div>
@@ -368,7 +371,7 @@ function evg_transactions_tab() {
                 <svg style="fill: #ff453a;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M48.5 224H40c-13.3 0-24-10.7-24-24V72c0-9.7 5.8-18.5 14.8-22.2s19.3-1.7 26.2 5.2L98.6 96.6c87.6-86.5 228.7-86.2 315.8 1c87.5 87.5 87.5 229.3 0 316.8s-229.3 87.5-316.8 0c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0c62.5 62.5 163.8 62.5 226.3 0s62.5-163.8 0-226.3c-62.2-62.2-162.7-62.5-225.3-1L185 183c6.9 6.9 8.9 17.2 5.2 26.2s-12.5 14.8-22.2 14.8H48.5z"/></svg>
             </div>
             <div class="evg-stat-content">
-                <h3 style="color: #ff453a;">&pound;<?php echo esc_html( number_format( $total_refunded, 2 ) ); ?></h3>
+                <h3 style="color: #ff453a;">&pound;<?php echo esc_html( number_format( (float) $total_refunded, 2 ) ); ?></h3>
                 <p><?php esc_html_e( 'Total Refunded', 'evg-platform' ); ?></p>
             </div>
         </div>
@@ -411,7 +414,7 @@ function evg_transactions_tab() {
                                 <span class="evg-stage-chip"><?php echo esc_html( $tx->current_stage ); ?></span>
                             </td>
                             <td>
-                                <strong style="color: #ffffff; font-size: 14px;">&pound;<?php echo esc_html( number_format( $tx->total_amount, 2 ) ); ?></strong>
+                                <strong style="color: #ffffff; font-size: 14px;">&pound;<?php echo esc_html( number_format( (float) $tx->total_amount, 2 ) ); ?></strong>
                             </td>
                             <td>
                                 <span class="evg-pay-status <?php echo esc_attr( $pay_class ); ?>">
@@ -419,7 +422,7 @@ function evg_transactions_tab() {
                                 </span>
                             </td>
                             <td style="text-align: right;">
-                                <form method="post" action="" style="display: inline-flex; gap: 6px; align-items: center; margin: 0;">
+                                <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_transactions' ) ); ?>" style="display: inline-flex; gap: 6px; align-items: center; margin: 0;">
                                     <?php wp_nonce_field( 'evg_update_payment', 'evg_payment_nonce' ); ?>
                                     <input type="hidden" name="submission_id" value="<?php echo esc_attr( $tx->id ); ?>">
                                     <select name="payment_status" class="evg-select-control">

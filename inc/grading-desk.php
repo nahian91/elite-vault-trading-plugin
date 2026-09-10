@@ -18,8 +18,6 @@ function evg_grading_desk_tab() {
 
     global $wpdb;
 
-    wp_enqueue_media();
-
     $table_cards       = $wpdb->prefix . 'evg_cards';
     $table_assessments = $wpdb->prefix . 'evg_assessments';
     $table_faults      = $wpdb->prefix . 'evg_fault_images';
@@ -31,54 +29,50 @@ function evg_grading_desk_tab() {
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_save_grade_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_save_grade_nonce'] ), 'evg_save_grade' ) ) {
             
-            $card_id         = absint( $_POST['card_id'] ?? 0 );
-            $submission_id   = absint( $_POST['submission_id'] ?? 0 );
-            $center_score    = intval( $_POST['centreing_score'] ?? 1 );
-            $corner_score    = intval( $_POST['corner_score'] ?? 1 );
-            $edge_score      = intval( $_POST['edge_score'] ?? 1 );
-            $surface_score   = intval( $_POST['surface_score'] ?? 1 );
-            $internal_notes  = sanitize_textarea_field( wp_unslash( $_POST['internal_notes'] ?? '' ) );
-            $grader_comments = sanitize_textarea_field( wp_unslash( $_POST['grader_comments'] ?? '' ) );
-            $final_grade     = max( 1, min( 10, intval( $_POST['final_grade'] ?? 10 ) ) );
+            $card_id         = isset( $_POST['card_id'] ) ? absint( $_POST['card_id'] ) : 0;
+            $submission_id   = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
+            $center_score    = isset( $_POST['centreing_score'] ) ? max( 1, min( 10, intval( $_POST['centreing_score'] ) ) ) : 1;
+            $corner_score    = isset( $_POST['corner_score'] ) ? max( 1, min( 10, intval( $_POST['corner_score'] ) ) ) : 1;
+            $edge_score      = isset( $_POST['edge_score'] ) ? max( 1, min( 10, intval( $_POST['edge_score'] ) ) ) : 1;
+            $surface_score   = isset( $_POST['surface_score'] ) ? max( 1, min( 10, intval( $_POST['surface_score'] ) ) ) : 1;
+            $internal_notes  = isset( $_POST['internal_notes'] ) ? sanitize_textarea_field( wp_unslash( $_POST['internal_notes'] ) ) : '';
+            $grader_comments = isset( $_POST['grader_comments'] ) ? sanitize_textarea_field( wp_unslash( $_POST['grader_comments'] ) ) : '';
+            $final_grade     = isset( $_POST['final_grade'] ) ? max( 1, min( 10, intval( $_POST['final_grade'] ) ) ) : 10;
 
             $current_user_id = get_current_user_id();
 
             // 1. Insert or Update Assessment Record
             $existing_assessment = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table_assessments} WHERE card_id = %d", $card_id ) );
 
+            $assessment_data = array(
+                'grader_id'       => $current_user_id,
+                'centreing_score' => number_format( (float) $center_score, 2, '.', '' ),
+                'corner_score'    => number_format( (float) $corner_score, 2, '.', '' ),
+                'edge_score'      => number_format( (float) $edge_score, 2, '.', '' ),
+                'surface_score'   => number_format( (float) $surface_score, 2, '.', '' ),
+                'internal_notes'  => $internal_notes,
+                'grader_comments' => $grader_comments,
+                'assessed_date'   => current_time( 'mysql' ),
+            );
+            $assessment_formats = array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' );
+
             if ( $existing_assessment ) {
                 $wpdb->update(
                     $table_assessments,
-                    array(
-                        'grader_id'       => $current_user_id,
-                        'centreing_score' => $center_score,
-                        'corner_score'    => $corner_score,
-                        'edge_score'      => $edge_score,
-                        'surface_score'   => $surface_score,
-                        'internal_notes'  => $internal_notes,
-                        'grader_comments' => $grader_comments,
-                        'assessed_date'   => current_time( 'mysql' )
-                    ),
+                    $assessment_data,
                     array( 'id' => $existing_assessment ),
-                    array( '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%s' ),
+                    $assessment_formats,
                     array( '%d' )
                 );
                 $assessment_id = $existing_assessment;
             } else {
+                $assessment_data['card_id'] = $card_id;
+                array_unshift( $assessment_formats, '%d' );
+
                 $wpdb->insert(
                     $table_assessments,
-                    array(
-                        'card_id'         => $card_id,
-                        'grader_id'       => $current_user_id,
-                        'centreing_score' => $center_score,
-                        'corner_score'    => $corner_score,
-                        'edge_score'      => $edge_score,
-                        'surface_score'   => $surface_score,
-                        'internal_notes'  => $internal_notes,
-                        'grader_comments' => $grader_comments,
-                        'assessed_date'   => current_time( 'mysql' )
-                    ),
-                    array( '%d', '%d', '%d', '%d', '%d', '%s', '%s', '%s' )
+                    $assessment_data,
+                    $assessment_formats
                 );
                 $assessment_id = $wpdb->insert_id;
             }
@@ -90,14 +84,14 @@ function evg_grading_desk_tab() {
                 $fault_types       = isset( $_POST['fault_types'] ) && is_array( $_POST['fault_types'] ) ? $_POST['fault_types'] : array();
                 $raw_free_previews = isset( $_POST['free_preview_indices'] ) && is_array( $_POST['free_preview_indices'] ) ? array_map( 'intval', $_POST['free_preview_indices'] ) : array();
 
-                // Enforce max 3 free preview selections
+                // Strict ceiling: Only allow up to 3 previews marked free
                 if ( count( $raw_free_previews ) > 3 ) {
                     $raw_free_previews = array_slice( $raw_free_previews, 0, 3 );
                 }
 
-                foreach ( $_POST['fault_images'] as $index => $fault_url ) {
+                foreach ( array_values( $_POST['fault_images'] ) as $index => $fault_url ) {
                     $clean_url       = esc_url_raw( wp_unslash( $fault_url ) );
-                    $fault_type      = isset( $fault_types[$index] ) ? sanitize_text_field( wp_unslash( $fault_types[$index] ) ) : 'Surface Scratch';
+                    $fault_type      = isset( $fault_types[ $index ] ) ? sanitize_text_field( wp_unslash( $fault_types[ $index ] ) ) : 'Surface Scratch';
                     $is_free_preview = in_array( (int) $index, $raw_free_previews, true ) ? 1 : 0;
 
                     if ( ! empty( $clean_url ) ) {
@@ -110,7 +104,7 @@ function evg_grading_desk_tab() {
                                 'image_url'       => $clean_url,
                                 'is_free_preview' => $is_free_preview,
                                 'notes'           => '',
-                                'created_at'      => current_time( 'mysql' )
+                                'created_at'      => current_time( 'mysql' ),
                             ),
                             array( '%d', '%d', '%s', '%s', '%d', '%s', '%s' )
                         );
@@ -123,7 +117,7 @@ function evg_grading_desk_tab() {
                 $table_cards,
                 array(
                     'final_grade'    => $final_grade,
-                    'grading_status' => 'Quality Control'
+                    'grading_status' => 'Quality Control',
                 ),
                 array( 'id' => $card_id ),
                 array( '%d', '%s' ),
@@ -131,9 +125,11 @@ function evg_grading_desk_tab() {
             );
 
             // 4. Update Submission Pipeline Stage if all cards are completed
-            $ungraded = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status NOT IN ('Quality Control', 'Encapsulation', 'Completed')", $submission_id ) );
-            if ( $ungraded === 0 ) {
-                $wpdb->update( $table_submissions, array( 'current_stage' => 'Quality Control' ), array( 'id' => $submission_id ) );
+            if ( $submission_id > 0 ) {
+                $ungraded = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status NOT IN ('Quality Control', 'Encapsulation', 'Completed')", $submission_id ) );
+                if ( 0 === $ungraded ) {
+                    $wpdb->update( $table_submissions, array( 'current_stage' => 'Quality Control' ), array( 'id' => $submission_id ), array( '%s' ), array( '%d' ) );
+                }
             }
 
             if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
@@ -454,15 +450,15 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
     $faults     = $wpdb->get_results( $wpdb->prepare( "SELECT image_url, fault_type, is_free_preview FROM {$table_faults} WHERE card_id = %d ORDER BY id ASC", $card_id ) );
 
     $fault_types_available = array(
-        'Surface Scratch'      => __( 'Surface Scratch', 'evg-platform' ),
-        'Edge Whitening'       => __( 'Edge Whitening', 'evg-platform' ),
-        'Corner Dent'          => __( 'Corner Dent', 'evg-platform' ),
-        'Holo Print Line'      => __( 'Holo Print Line', 'evg-platform' ),
-        'Centering Imbalance'  => __( 'Centering Imbalance', 'evg-platform' ),
-        'Surface Damage'       => __( 'Surface Damage', 'evg-platform' ),
-        'Corner Imperfection'  => __( 'Corner Imperfection', 'evg-platform' ),
-        'Edge Wear'            => __( 'Edge Wear', 'evg-platform' ),
-        'Other'                => __( 'Other Fault', 'evg-platform' )
+        'Surface Scratch'     => __( 'Surface Scratch', 'evg-platform' ),
+        'Edge Whitening'      => __( 'Edge Whitening', 'evg-platform' ),
+        'Corner Dent'         => __( 'Corner Dent', 'evg-platform' ),
+        'Holo Print Line'     => __( 'Holo Print Line', 'evg-platform' ),
+        'Centering Imbalance' => __( 'Centering Imbalance', 'evg-platform' ),
+        'Surface Damage'      => __( 'Surface Damage', 'evg-platform' ),
+        'Corner Imperfection' => __( 'Corner Imperfection', 'evg-platform' ),
+        'Edge Wear'           => __( 'Edge Wear', 'evg-platform' ),
+        'Other'               => __( 'Other Fault', 'evg-platform' )
     );
     ?>
     <style>
@@ -799,7 +795,7 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                     </div>
                     <div class="evg-card-box-body">
                         <p style="font-size: 11px; color: #8e8e93; margin: 0 0 12px 0; line-height: 1.5;">
-                            <?php esc_html_e( 'Upload defect scans at once. Check up to 3 for free preview; remaining scans blur behind the £0.99 unlock paywall.', 'evg-platform' ); ?>
+                            <?php esc_html_e( 'Upload defect scans at once. Check up to 3 for free preview; remaining scans blur behind the £0.99 portfolio paywall.', 'evg-platform' ); ?>
                         </p>
 
                         <div id="evg-fault-preview-container" class="evg-fault-grid">
@@ -815,7 +811,7 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                                                 <?php endforeach; ?>
                                             </select>
                                             <label class="evg-preview-toggle-wrap">
-                                                <input type="checkbox" name="free_preview_indices[]" value="<?php echo esc_attr( $index ); ?>" class="evg-preview-checkbox" <?php checked( $fault->is_free_preview, 1 ); ?>>
+                                                <input type="checkbox" name="free_preview_indices[]" value="<?php echo esc_attr( $index ); ?>" class="evg-preview-checkbox" <?php checked( (int) $fault->is_free_preview, 1 ); ?>>
                                                 <span><?php esc_html_e( 'Free Preview (Max 3)', 'evg-platform' ); ?></span>
                                             </label>
                                         </div>
@@ -843,19 +839,19 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                         <div class="evg-score-matrix">
                             <div class="evg-score-card">
                                 <label><?php esc_html_e( 'Centring', 'evg-platform' ); ?></label>
-                                <input type="number" id="sub_centre" name="centreing_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( $assessment->centreing_score ) : ''; ?>">
+                                <input type="number" id="sub_centre" name="centreing_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( intval( $assessment->centreing_score ) ) : ''; ?>">
                             </div>
                             <div class="evg-score-card">
                                 <label><?php esc_html_e( 'Corners', 'evg-platform' ); ?></label>
-                                <input type="number" id="sub_corner" name="corner_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( $assessment->corner_score ) : ''; ?>">
+                                <input type="number" id="sub_corner" name="corner_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( intval( $assessment->corner_score ) ) : ''; ?>">
                             </div>
                             <div class="evg-score-card">
                                 <label><?php esc_html_e( 'Edges', 'evg-platform' ); ?></label>
-                                <input type="number" id="sub_edge" name="edge_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( $assessment->edge_score ) : ''; ?>">
+                                <input type="number" id="sub_edge" name="edge_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( intval( $assessment->edge_score ) ) : ''; ?>">
                             </div>
                             <div class="evg-score-card">
                                 <label><?php esc_html_e( 'Surface', 'evg-platform' ); ?></label>
-                                <input type="number" id="sub_surface" name="surface_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( $assessment->surface_score ) : ''; ?>">
+                                <input type="number" id="sub_surface" name="surface_score" class="evg-score-field sub-calc" min="1" max="10" step="1" required value="<?php echo $assessment ? esc_attr( intval( $assessment->surface_score ) ) : ''; ?>">
                             </div>
                         </div>
 
@@ -882,10 +878,10 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                             </div>
                             <div>
                                 <select id="evg_final_grade_select" name="final_grade" class="evg-grade-select" required>
-                                    <option value="" disabled selected>—</option>
+                                    <option value="" disabled <?php selected( empty( $card->final_grade ), true ); ?>>—</option>
                                     <?php 
-                                    for( $i = 10; $i >= 1; $i-- ) {
-                                        $selected = ( $card->final_grade == $i ) ? 'selected' : '';
+                                    for ( $i = 10; $i >= 1; $i-- ) {
+                                        $selected = ( (int) $card->final_grade === $i ) ? 'selected' : '';
                                         echo '<option value="' . esc_attr( $i ) . '" ' . $selected . '>' . esc_html( $i ) . '</option>';
                                     }
                                     ?>
@@ -912,14 +908,12 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                 echo $opts;
             ?>';
 
-            // Function to synchronize free preview badge count
             function updateFreePreviewCounter() {
                 var checkedCount = $('.evg-preview-checkbox:checked').length;
                 $('#evg-free-counter').text(checkedCount + '/3 Free Previews');
             }
             updateFreePreviewCounter();
 
-            // Strict limit of up to 3 free previews
             $(document).on('change', '.evg-preview-checkbox', function() {
                 var checkedCount = $('.evg-preview-checkbox:checked').length;
                 if (checkedCount > 3) {
@@ -934,7 +928,6 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                 updateFreePreviewCounter();
             });
 
-            // Re-index all uploaded photo elements to maintain contiguous array mapping
             function reindexFaultElements() {
                 $('#evg-fault-preview-container .evg-fault-cell').each(function(idx) {
                     $(this).find('input[type="hidden"]').attr('name', 'fault_images[' + idx + ']');
@@ -951,27 +944,27 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
                 custom_uploader = wp.media({
                     title: '<?php esc_attr_e( 'Upload Defect Imagery', 'evg-platform' ); ?>',
                     button: { text: '<?php esc_attr_e( 'Attach Images', 'evg-platform' ); ?>' },
-                    multiple: true // Batch upload supported
+                    multiple: true
                 });
                 custom_uploader.on('select', function() {
                     var selection = custom_uploader.state().get('selection');
                     selection.each(function(attachment) {
                         var attJSON = attachment.toJSON();
-                        var nextIdx = $('#evg-fault-preview-container .evg-fault-cell').length;
-                        var autoCheck = ($('.evg-preview-checkbox:checked').length < 3) ? 'checked' : '';
+                        var currentChecked = $('.evg-preview-checkbox:checked').length;
+                        var autoCheck = (currentChecked < 3) ? 'checked' : '';
                         var activeClass = autoCheck ? 'is-preview-active' : '';
 
                         var html = '<div class="evg-fault-cell ' + activeClass + '">' +
-                                       '<img src="' + attJSON.url + '" alt="Defect">' +
-                                       '<div class="evg-fault-meta">' +
-                                           '<input type="hidden" name="fault_images[' + nextIdx + ']" value="' + attJSON.url + '">' +
-                                           '<select name="fault_types[' + nextIdx + ']">' + faultTypesOptions + '</select>' +
-                                           '<label class="evg-preview-toggle-wrap">' +
-                                               '<input type="checkbox" name="free_preview_indices[]" value="' + nextIdx + '" class="evg-preview-checkbox" ' + autoCheck + '>' +
-                                               '<span><?php esc_html_e( 'Free Preview (Max 3)', 'evg-platform' ); ?></span>' +
-                                           '</label>' +
-                                       '</div>' +
-                                       '<button type="button" class="btn-del-img" title="<?php esc_attr_e( 'Remove Photo', 'evg-platform' ); ?>">✕</button>' +
+                                        '<img src="' + attJSON.url + '" alt="Defect">' +
+                                        '<div class="evg-fault-meta">' +
+                                            '<input type="hidden" name="fault_images[]" value="' + attJSON.url + '">' +
+                                            '<select name="fault_types[]">' + faultTypesOptions + '</select>' +
+                                            '<label class="evg-preview-toggle-wrap">' +
+                                                '<input type="checkbox" name="free_preview_indices[]" value="0" class="evg-preview-checkbox" ' + autoCheck + '>' +
+                                                '<span><?php esc_html_e( 'Free Preview (Max 3)', 'evg-platform' ); ?></span>' +
+                                            '</label>' +
+                                        '</div>' +
+                                        '<button type="button" class="btn-del-img" title="<?php esc_attr_e( 'Remove Photo', 'evg-platform' ); ?>">✕</button>' +
                                    '</div>';
                         $('#evg-fault-preview-container').append(html);
                     });
@@ -987,10 +980,10 @@ function evg_render_pro_grading_terminal( $card_id, $table_cards, $table_submiss
 
             // Calculate whole number floor suggestion
             $('.sub-calc').on('input change', function() {
-                var c  = parseInt($('#sub_centre').val()) || 0;
-                var cr = parseInt($('#sub_corner').val()) || 0;
-                var e  = parseInt($('#sub_edge').val()) || 0;
-                var s  = parseInt($('#sub_surface').val()) || 0;
+                var c  = parseInt($('#sub_centre').val(), 10) || 0;
+                var cr = parseInt($('#sub_corner').val(), 10) || 0;
+                var e  = parseInt($('#sub_edge').val(), 10) || 0;
+                var s  = parseInt($('#sub_surface').val(), 10) || 0;
 
                 if (c > 0 && cr > 0 && e > 0 && s > 0) {
                     var lowest    = Math.min(c, cr, e, s);

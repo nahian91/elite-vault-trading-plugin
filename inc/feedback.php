@@ -24,19 +24,34 @@ function evg_feedback_tab() {
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_feedback_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_feedback_nonce'] ), 'evg_update_feedback' ) ) {
             
-            $feedback_id = absint( $_POST['feedback_id'] ?? 0 );
-            $status      = sanitize_text_field( wp_unslash( $_POST['status'] ?? 'Pending' ) );
+            $feedback_id = isset( $_POST['feedback_id'] ) ? absint( $_POST['feedback_id'] ) : 0;
+            $raw_status  = isset( $_POST['status'] ) ? sanitize_text_field( wp_unslash( $_POST['status'] ) ) : 'Pending';
 
-            $wpdb->update(
-                $table_feedback,
-                array( 'status' => $status ),
-                array( 'id' => $feedback_id ),
-                array( '%s' ),
-                array( '%d' )
-            );
+            $allowed_statuses = array( 'Pending', 'Reviewed', 'Responded', 'Featured Testimonial' );
+            if ( ! in_array( $raw_status, $allowed_statuses, true ) ) {
+                $raw_status = 'Pending';
+            }
 
-            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                Elite_Vault_Grading_System::log_activity( "Updated Feedback ID {$feedback_id} status to: {$status}" );
+            // Enforce marketing consent guard: Cannot feature testimonial if consent was withheld
+            if ( 'Featured Testimonial' === $raw_status ) {
+                $permission = (int) $wpdb->get_var( $wpdb->prepare( "SELECT permission_to_use FROM {$table_feedback} WHERE id = %d", $feedback_id ) );
+                if ( 1 !== $permission ) {
+                    $raw_status = 'Reviewed';
+                }
+            }
+
+            if ( $feedback_id > 0 ) {
+                $wpdb->update(
+                    $table_feedback,
+                    array( 'status' => $raw_status ),
+                    array( 'id' => $feedback_id ),
+                    array( '%s' ),
+                    array( '%d' )
+                );
+
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "Updated Feedback ID {$feedback_id} status to: {$raw_status}" );
+                }
             }
             
             $redirect_url = admin_url( 'admin.php?page=evg_tab_feedback&fb_updated=1' );
@@ -56,9 +71,11 @@ function evg_feedback_tab() {
     if ( isset( $_GET['delete_feedback'] ) && isset( $_GET['_wpnonce'] ) ) {
         $del_id = absint( $_GET['delete_feedback'] );
         if ( wp_verify_nonce( sanitize_key( $_GET['_wpnonce'] ), 'evg_delete_feedback_' . $del_id ) ) {
-            $wpdb->delete( $table_feedback, array( 'id' => $del_id ), array( '%d' ) );
-            if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                Elite_Vault_Grading_System::log_activity( "Deleted Feedback ID {$del_id}." );
+            if ( $del_id > 0 ) {
+                $wpdb->delete( $table_feedback, array( 'id' => $del_id ), array( '%d' ) );
+                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                    Elite_Vault_Grading_System::log_activity( "Deleted Feedback ID {$del_id}." );
+                }
             }
 
             $redirect_url = admin_url( 'admin.php?page=evg_tab_feedback&fb_deleted=1' );
@@ -470,7 +487,7 @@ function evg_feedback_tab() {
                     <tbody>
                         <?php if ( ! empty( $feedbacks ) ) : ?>
                             <?php foreach ( $feedbacks as $fb ) : 
-                                $badge_class = 'evg-status-' . ( 'Featured Testimonial' === $fb->status ? 'Featured' : $fb->status );
+                                $badge_class = 'evg-status-' . ( 'Featured Testimonial' === $fb->status ? 'Featured' : sanitize_html_class( $fb->status ) );
                                 $timestamp   = strtotime( $fb->submitted_at );
                             ?>
                                 <tr>
@@ -516,7 +533,7 @@ function evg_feedback_tab() {
                                         </span>
                                     </td>
                                     <td style="text-align: right;">
-                                        <form method="post" action="" style="margin: 0; display: inline-block; width: 100%;">
+                                        <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_feedback' ) ); ?>" style="margin: 0; display: inline-block; width: 100%;">
                                             <?php wp_nonce_field( 'evg_update_feedback', 'evg_feedback_nonce' ); ?>
                                             <input type="hidden" name="feedback_id" value="<?php echo esc_attr( $fb->id ); ?>">
                                             <select name="status" class="evg-select-control">
@@ -531,7 +548,7 @@ function evg_feedback_tab() {
                                                 <button type="submit" class="evg-btn-update">
                                                     <?php esc_html_e('Save', 'evg-platform'); ?>
                                                 </button>
-                                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=evg_tab_feedback&delete_feedback=' . $fb->id ), 'evg_delete_feedback_' . $fb->id ) ); ?>" class="evg-btn-del" title="<?php esc_attr_e( 'Delete entry', 'evg-platform' ); ?>" onclick="return confirm('<?php esc_attr_e('Permanently purge this feedback record?', 'evg-platform'); ?>');">
+                                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=evg_tab_feedback&delete_feedback=' . $fb->id ), 'evg_delete_feedback_' . $fb->id ) ); ?>" class="evg-btn-del" title="<?php esc_attr_e( 'Delete entry', 'evg-platform' ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Permanently purge this feedback record?', 'evg-platform' ) ); ?>');">
                                                     ✕
                                                 </a>
                                             </div>

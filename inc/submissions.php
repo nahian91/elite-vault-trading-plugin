@@ -17,11 +17,6 @@ function evg_submissions_tab() {
         return;
     }
 
-    // Ensure WordPress Media Uploader Scripts are Loaded
-    if ( function_exists( 'wp_enqueue_media' ) ) {
-        wp_enqueue_media();
-    }
-
     global $wpdb;
 
     $table_submissions = $wpdb->prefix . 'evg_submissions';
@@ -40,9 +35,6 @@ function evg_submissions_tab() {
             $service_type   = isset( $_POST['service_type'] ) ? sanitize_text_field( wp_unslash( $_POST['service_type'] ) ) : 'Standard';
             $label_option   = isset( $_POST['label_option'] ) ? sanitize_text_field( wp_unslash( $_POST['label_option'] ) ) : 'Standard Label';
 
-            // Optional manual price override or auto-recalc flag
-            $total_amount = isset( $_POST['total_amount'] ) ? floatval( $_POST['total_amount'] ) : null;
-
             $update_data = array(
                 'current_stage'   => $new_stage,
                 'payment_status'  => $payment_status,
@@ -52,9 +44,9 @@ function evg_submissions_tab() {
             );
             $update_formats = array( '%s', '%s', '%s', '%s', '%s' );
 
-            if ( null !== $total_amount ) {
-                $update_data['total_amount'] = $total_amount;
-                $update_formats[] = '%f';
+            if ( isset( $_POST['total_amount'] ) && '' !== trim( $_POST['total_amount'] ) ) {
+                $update_data['total_amount'] = number_format( (float) $_POST['total_amount'], 2, '.', '' );
+                $update_formats[] = '%s';
             }
 
             $wpdb->update(
@@ -119,37 +111,37 @@ function evg_submissions_tab() {
                         'front_image_url' => $front_image_url,
                         'back_image_url'  => $back_image_url,
                         'grading_status'  => $grading_status,
-                    )
+                    ),
+                    array( '%d', '%s', '%s', '%s', '%s', ( null === $final_grade ? null : '%d' ), '%s', '%s', '%s' )
                 );
 
                 // Fetch parent submission details
                 $sub_record = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_submissions} WHERE id = %d", $sub_id ) );
 
-                // Update total cards count on parent submission
-                $card_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d", $sub_id ) );
+                if ( $sub_record ) {
+                    $card_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d", $sub_id ) );
 
-                // Pull configured pricing defaults (£9.99 base)
-                $base_rate   = floatval( get_option( 'evg_price_standard', 9.99 ) );
-                $label_fee   = ( false !== stripos( $sub_record->label_option, 'gold' ) || false !== stripos( $sub_record->label_option, 'custom' ) || false !== stripos( $sub_record->label_option, 'premium' ) ) ? floatval( get_option( 'evg_price_premium_upgrade', 2.99 ) ) : 0.00;
-                $speed_fee   = ( false !== stripos( $sub_record->service_type, 'express' ) || false !== stripos( $sub_record->service_type, 'fast' ) ) ? 4.99 : 0.00;
-                $shipping    = floatval( get_option( 'evg_return_shipping_fee', 9.99 ) );
+                    $base_rate = floatval( get_option( 'evg_price_standard', 9.99 ) );
+                    $label_fee = ( false !== stripos( $sub_record->label_option, 'gold' ) || false !== stripos( $sub_record->label_option, 'custom' ) || false !== stripos( $sub_record->label_option, 'premium' ) ) ? floatval( get_option( 'evg_price_premium_upgrade', 2.99 ) ) : 0.00;
+                    $speed_fee = ( false !== stripos( $sub_record->service_type, 'express' ) || false !== stripos( $sub_record->service_type, 'fast' ) ) ? 4.99 : 0.00;
+                    $shipping  = floatval( get_option( 'evg_return_shipping_fee', 9.99 ) );
 
-                // Compute updated total amount
-                $recalculated_total = ( $card_count * ( $base_rate + $label_fee + $speed_fee ) ) + $shipping;
+                    $recalculated_total = ( $card_count * ( $base_rate + $label_fee + $speed_fee ) ) + $shipping;
 
-                $wpdb->update(
-                    $table_submissions,
-                    array(
-                        'total_cards'  => $card_count,
-                        'total_amount' => $recalculated_total,
-                    ),
-                    array( 'id' => $sub_id ),
-                    array( '%d', '%f' ),
-                    array( '%d' )
-                );
+                    $wpdb->update(
+                        $table_submissions,
+                        array(
+                            'total_cards'  => $card_count,
+                            'total_amount' => number_format( $recalculated_total, 2, '.', '' ),
+                        ),
+                        array( 'id' => $sub_id ),
+                        array( '%d', '%s' ),
+                        array( '%d' )
+                    );
 
-                if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
-                    Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Submission ID {$sub_id}. Recalculated total to £" . number_format( $recalculated_total, 2 ) );
+                    if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+                        Elite_Vault_Grading_System::log_activity( "Added new card unit ({$card_name}) to Submission ID {$sub_id}. Recalculated total to £" . number_format( $recalculated_total, 2 ) );
+                    }
                 }
 
                 $redirect_url = admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub_id . '&card_added=1' );
@@ -454,7 +446,7 @@ function evg_render_pro_submissions_list( $table_submissions ) {
                                 <span class="evg-pay-badge <?php echo esc_attr( $pay_class ); ?>">
                                     ● <?php echo esc_html( $sub->payment_status ); ?>
                                 </span><br>
-                                <span style="font-weight: 700; color: #ffffff; font-size: 12px;">&pound;<?php echo esc_html( number_format( $sub->total_amount, 2 ) ); ?></span>
+                                <span style="font-weight: 700; color: #ffffff; font-size: 12px;">&pound;<?php echo esc_html( number_format( (float) $sub->total_amount, 2 ) ); ?></span>
                             </td>
                             <td style="text-align: right;">
                                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $sub->id ) ); ?>" class="evg-btn-manage">

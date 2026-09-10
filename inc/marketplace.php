@@ -15,15 +15,19 @@ function evg_marketplace_tab() {
         return;
     }
 
-    // Ensure WordPress Media Uploader Scripts are Loaded
-    if ( function_exists( 'wp_enqueue_media' ) ) {
-        wp_enqueue_media();
-    }
-
     global $wpdb;
 
     $table_marketplace = $wpdb->prefix . 'evg_marketplace';
     $table_cards       = $wpdb->prefix . 'evg_cards';
+
+    $categories = array(
+        'Elite Vault Graded Cards',
+        'Ungraded Cards',
+        'Featured Cards',
+        'New Arrivals',
+        'High Value Cards',
+        'Collections/Bundles'
+    );
 
     // ---------------------------------------------------------
     // 1. Handle Form Submissions (Create / Edit Listing)
@@ -33,18 +37,23 @@ function evg_marketplace_tab() {
             
             $listing_id       = isset( $_POST['listing_id'] ) ? absint( $_POST['listing_id'] ) : 0;
             $card_id          = ( ! empty( $_POST['card_id'] ) && absint( $_POST['card_id'] ) > 0 ) ? absint( $_POST['card_id'] ) : null;
-            $card_title       = sanitize_text_field( wp_unslash( $_POST['card_title'] ?? '' ) );
-            $set_name         = sanitize_text_field( wp_unslash( $_POST['set_name'] ?? '' ) );
-            $card_number      = sanitize_text_field( wp_unslash( $_POST['card_number'] ?? '' ) );
-            $language         = sanitize_text_field( wp_unslash( $_POST['language'] ?? 'English' ) );
-            $grading_company  = sanitize_text_field( wp_unslash( $_POST['grading_company'] ?? 'Elite Vault Grading' ) );
-            $slab_information = sanitize_text_field( wp_unslash( $_POST['slab_information'] ?? '' ) );
-            $assigned_grade   = ( isset( $_POST['assigned_grade'] ) && '' !== $_POST['assigned_grade'] ) ? absint( $_POST['assigned_grade'] ) : null;
-            $image_url        = esc_url_raw( wp_unslash( $_POST['image_url'] ?? '' ) );
-            $price            = floatval( $_POST['price'] ?? 0 );
-            $stock_quantity   = max( 0, intval( $_POST['stock_quantity'] ?? 0 ) );
-            $category         = sanitize_text_field( wp_unslash( $_POST['category'] ?? 'Elite Vault Graded Cards' ) );
-            $status           = sanitize_text_field( wp_unslash( $_POST['status'] ?? 'Available' ) );
+            $card_title       = isset( $_POST['card_title'] ) ? sanitize_text_field( wp_unslash( $_POST['card_title'] ) ) : '';
+            $set_name         = isset( $_POST['set_name'] ) ? sanitize_text_field( wp_unslash( $_POST['set_name'] ) ) : '';
+            $card_number      = isset( $_POST['card_number'] ) ? sanitize_text_field( wp_unslash( $_POST['card_number'] ) ) : '';
+            $language         = isset( $_POST['language'] ) ? sanitize_text_field( wp_unslash( $_POST['language'] ) ) : 'English';
+            $grading_company  = isset( $_POST['grading_company'] ) ? sanitize_text_field( wp_unslash( $_POST['grading_company'] ) ) : 'Elite Vault Grading';
+            $slab_information = isset( $_POST['slab_information'] ) ? sanitize_text_field( wp_unslash( $_POST['slab_information'] ) ) : '';
+            $assigned_grade   = ( isset( $_POST['assigned_grade'] ) && '' !== trim( $_POST['assigned_grade'] ) ) ? absint( $_POST['assigned_grade'] ) : null;
+            $image_url        = isset( $_POST['image_url'] ) ? esc_url_raw( wp_unslash( $_POST['image_url'] ) ) : '';
+            $raw_price        = isset( $_POST['price'] ) ? floatval( $_POST['price'] ) : 0.00;
+            $price            = number_format( max( 0.00, $raw_price ), 2, '.', '' );
+            $stock_quantity   = isset( $_POST['stock_quantity'] ) ? max( 0, intval( $_POST['stock_quantity'] ) ) : 0;
+            $raw_category     = isset( $_POST['category'] ) ? sanitize_text_field( wp_unslash( $_POST['category'] ) ) : 'Elite Vault Graded Cards';
+            $raw_status       = isset( $_POST['status'] ) ? sanitize_text_field( wp_unslash( $_POST['status'] ) ) : 'Available';
+
+            $allowed_statuses = array( 'Available', 'Sold', 'Hidden' );
+            $status           = in_array( $raw_status, $allowed_statuses, true ) ? $raw_status : 'Available';
+            $category         = in_array( $raw_category, $categories, true ) ? $raw_category : 'Elite Vault Graded Cards';
 
             // Automatically set Sold status if stock reaches 0
             if ( 0 === $stock_quantity && 'Available' === $status ) {
@@ -75,40 +84,53 @@ function evg_marketplace_tab() {
                 'status'           => $status,
             );
 
+            $data_formats = array(
+                ( null === $card_id ? null : '%d' ),
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                '%s',
+                ( null === $assigned_grade ? null : '%d' ),
+                '%s',
+                '%s',
+                '%d',
+                '%s',
+                '%s'
+            );
+
             if ( $listing_id > 0 ) {
                 $wpdb->update(
                     $table_marketplace,
                     $data,
-                    array( 'id' => $listing_id )
+                    array( 'id' => $listing_id ),
+                    $data_formats,
+                    array( '%d' )
                 );
                 if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
                     Elite_Vault_Grading_System::log_activity( "Updated Marketplace Listing #{$listing_id} ({$card_title})." );
                 }
                 
                 $redirect_url = admin_url( 'admin.php?page=evg_tab_marketplace&updated=1' );
-                if ( ! headers_sent() ) {
-                    wp_safe_redirect( $redirect_url );
-                    exit;
-                } else {
-                    echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
-                    exit;
-                }
             } else {
                 $data['listed_date'] = current_time( 'mysql' );
-                $wpdb->insert( $table_marketplace, $data );
+                $data_formats[]      = '%s';
+                $wpdb->insert( $table_marketplace, $data, $data_formats );
                 $new_id = $wpdb->insert_id;
                 if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
                     Elite_Vault_Grading_System::log_activity( "Created Marketplace Listing #{$new_id} ({$card_title})." );
                 }
                 
                 $redirect_url = admin_url( 'admin.php?page=evg_tab_marketplace&created=1' );
-                if ( ! headers_sent() ) {
-                    wp_safe_redirect( $redirect_url );
-                    exit;
-                } else {
-                    echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
-                    exit;
-                }
+            }
+
+            if ( ! headers_sent() ) {
+                wp_safe_redirect( $redirect_url );
+                exit;
+            } else {
+                echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
+                exit;
             }
         }
     }
@@ -119,7 +141,10 @@ function evg_marketplace_tab() {
     if ( isset( $_GET['toggle_status'] ) && isset( $_GET['listing_id'] ) && isset( $_GET['_wpnonce'] ) ) {
         $listing_id = absint( $_GET['listing_id'] );
         if ( wp_verify_nonce( sanitize_key( $_GET['_wpnonce'] ), 'evg_toggle_status_' . $listing_id ) ) {
-            $new_status = sanitize_text_field( wp_unslash( $_GET['toggle_status'] ) );
+            $raw_toggle = sanitize_text_field( wp_unslash( $_GET['toggle_status'] ) );
+            $allowed_toggles = array( 'Available', 'Sold', 'Hidden' );
+            $new_status = in_array( $raw_toggle, $allowed_toggles, true ) ? $raw_toggle : 'Available';
+
             $wpdb->update(
                 $table_marketplace,
                 array( 'status' => $new_status ),
@@ -184,7 +209,7 @@ function evg_marketplace_tab() {
 
     if ( 'add' === $action || 'edit' === $action ) {
         $listing_id = isset( $_GET['listing_id'] ) ? absint( $_GET['listing_id'] ) : 0;
-        evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $table_cards );
+        evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $table_cards, $categories );
     } else {
         evg_render_pro_marketplace_list( $table_marketplace );
     }
@@ -477,7 +502,7 @@ function evg_render_pro_marketplace_list( $table_marketplace ) {
             <tbody>
                 <?php if ( ! empty( $listings ) ) : ?>
                     <?php foreach ( $listings as $item ) : 
-                        $status_class  = 'evg-status-' . esc_attr( $item->status );
+                        $status_class  = 'evg-status-' . sanitize_html_class( $item->status );
                         $display_title = $item->card_title ? $item->card_title : 'Graded Card';
                     ?>
                         <tr>
@@ -513,7 +538,7 @@ function evg_render_pro_marketplace_list( $table_marketplace ) {
                             </td>
                             <td>
                                 <span style="font-weight: 800; font-size: 15px; color: var(--evg-gold);">
-                                    &pound;<?php echo esc_html( number_format( $item->price, 2 ) ); ?>
+                                    &pound;<?php echo esc_html( number_format( (float) $item->price, 2 ) ); ?>
                                 </span>
                             </td>
                             <td>
@@ -535,7 +560,7 @@ function evg_render_pro_marketplace_list( $table_marketplace ) {
                                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_marketplace&action=edit&listing_id=' . $item->id ) ); ?>" class="evg-btn-action-edit">
                                     <?php esc_html_e( 'Edit', 'evg-platform' ); ?>
                                 </a>
-                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=evg_tab_marketplace&delete_listing=' . $item->id ), 'evg_delete_listing_' . $item->id ) ); ?>" class="evg-btn-action-del" onclick="return confirm('<?php esc_attr_e('Permanently remove this card from the marketplace?', 'evg-platform'); ?>');">
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=evg_tab_marketplace&delete_listing=' . $item->id ), 'evg_delete_listing_' . $item->id ) ); ?>" class="evg-btn-action-del" onclick="return confirm('<?php echo esc_js( __( 'Permanently remove this card from the marketplace?', 'evg-platform' ) ); ?>');">
                                     ✕
                                 </a>
                             </td>
@@ -578,7 +603,7 @@ function evg_render_pro_marketplace_list( $table_marketplace ) {
 /**
  * Pro View: Publish / Edit Marketplace Listing Form
  */
-function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $table_cards ) {
+function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $table_cards, $categories ) {
     global $wpdb;
 
     $listing = null;
@@ -586,18 +611,9 @@ function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $tabl
         SELECT c.*, s.order_number 
         FROM {$table_cards} c
         JOIN {$wpdb->prefix}evg_submissions s ON c.submission_id = s.id
-        WHERE c.grading_status IN ('Completed', 'Quality Control')
+        WHERE c.grading_status IN ('Encapsulation', 'Completed')
         ORDER BY c.id DESC LIMIT 150
     " );
-
-    $categories = array(
-        'Elite Vault Graded Cards',
-        'Ungraded Cards',
-        'Featured Cards',
-        'New Arrivals',
-        'High Value Cards',
-        'Collections/Bundles'
-    );
 
     if ( $listing_id > 0 ) {
         $listing = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_marketplace} WHERE id = %d", $listing_id ) );
@@ -785,7 +801,7 @@ function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $tabl
                 <div class="evg-input-grid-2">
                     <div class="evg-input-group">
                         <label><?php esc_html_e( 'Price (£)', 'evg-platform' ); ?></label>
-                        <input type="number" name="price" class="evg-control-field" min="0.00" step="0.01" value="<?php echo $listing ? esc_attr( $listing->price ) : ''; ?>" required placeholder="0.00">
+                        <input type="number" name="price" class="evg-control-field" min="0.00" step="0.01" value="<?php echo $listing ? esc_attr( number_format( (float) $listing->price, 2, '.', '' ) ) : ''; ?>" required placeholder="0.00">
                     </div>
                     <div class="evg-input-group">
                         <label><?php esc_html_e( 'Stock', 'evg-platform' ); ?></label>
@@ -823,7 +839,6 @@ function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $tabl
 
     <script>
         jQuery(document).ready(function($) {
-            // Auto-fill fields when selecting a graded card from internal database
             $('#evg_graded_card_picker').on('change', function() {
                 var opt = $(this).find(':selected');
                 if (opt.val()) {
@@ -836,7 +851,6 @@ function evg_render_pro_marketplace_form( $listing_id, $table_marketplace, $tabl
                 }
             });
 
-            // WP Media Uploader for Card Visual
             $('#evg_upload_mkt_btn').on('click', function(e) {
                 e.preventDefault();
                 if (typeof wp !== 'undefined' && wp.media) {

@@ -28,16 +28,16 @@ function evg_quality_control_tab() {
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_qc_action_nonce'] ) ) {
         if ( wp_verify_nonce( sanitize_key( $_POST['evg_qc_action_nonce'] ), 'evg_qc_action' ) ) {
             
-            $card_id        = absint( $_POST['card_id'] ?? 0 );
-            $submission_id  = absint( $_POST['submission_id'] ?? 0 );
-            $qc_action      = sanitize_key( $_POST['qc_action'] ?? '' );
+            $card_id        = isset( $_POST['card_id'] ) ? absint( $_POST['card_id'] ) : 0;
+            $submission_id  = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
+            $qc_action      = isset( $_POST['qc_action'] ) ? sanitize_key( $_POST['qc_action'] ) : '';
             $publish_report = isset( $_POST['transparency_published'] ) ? 1 : 0;
 
-            if ( 'approve' === $qc_action ) {
+            if ( 'approve' === $qc_action && $card_id > 0 ) {
                 $wpdb->update(
                     $table_cards,
                     array( 
-                        'grading_status'         => 'Encapsulated',
+                        'grading_status'         => 'Encapsulation',
                         'transparency_published' => $publish_report
                     ),
                     array( 'id' => $card_id ),
@@ -45,16 +45,18 @@ function evg_quality_control_tab() {
                     array( '%d' )
                 );
 
-                // Auto-advance submission stage if all cards in batch are sealed
-                $pending_cards = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status != 'Encapsulated'", $submission_id ) );
-                if ( 0 === $pending_cards ) {
-                    $wpdb->update(
-                        $table_submissions,
-                        array( 'current_stage' => 'Encapsulation' ),
-                        array( 'id' => $submission_id ),
-                        array( '%s' ),
-                        array( '%d' )
-                    );
+                // Auto-advance submission stage if all cards in batch have cleared QC
+                if ( $submission_id > 0 ) {
+                    $pending_cards = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(id) FROM {$table_cards} WHERE submission_id = %d AND grading_status NOT IN ('Encapsulation', 'Completed')", $submission_id ) );
+                    if ( 0 === $pending_cards ) {
+                        $wpdb->update(
+                            $table_submissions,
+                            array( 'current_stage' => 'Encapsulation' ),
+                            array( 'id' => $submission_id ),
+                            array( '%s' ),
+                            array( '%d' )
+                        );
+                    }
                 }
 
                 if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
@@ -69,7 +71,7 @@ function evg_quality_control_tab() {
                     echo '<script>window.location.href = "' . esc_url( $redirect_url ) . '";</script>';
                     exit;
                 }
-            } elseif ( 'reject' === $qc_action ) {
+            } elseif ( 'reject' === $qc_action && $card_id > 0 ) {
                 $wpdb->update(
                     $table_cards,
                     array( 'grading_status' => 'Grading In Progress' ),
@@ -78,13 +80,15 @@ function evg_quality_control_tab() {
                     array( '%d' )
                 );
 
-                $wpdb->update(
-                    $table_submissions,
-                    array( 'current_stage' => 'Grading In Progress' ),
-                    array( 'id' => $submission_id ),
-                    array( '%s' ),
-                    array( '%d' )
-                );
+                if ( $submission_id > 0 ) {
+                    $wpdb->update(
+                        $table_submissions,
+                        array( 'current_stage' => 'Grading In Progress' ),
+                        array( 'id' => $submission_id ),
+                        array( '%s' ),
+                        array( '%d' )
+                    );
+                }
 
                 if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
                     Elite_Vault_Grading_System::log_activity( "QC Rejected for Card ID {$card_id}. Returned to Grading Desk." );
@@ -392,11 +396,8 @@ function evg_render_pro_qc_review_interface( $card_id, $table_cards, $table_subm
         return;
     }
 
-    $assessment = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_assessments} WHERE card_id = %d", $card_id ) );
-    $fault_images = array();
-    if ( $assessment ) {
-        $fault_images = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table_faults} WHERE assessment_id = %d", $assessment->id ) );
-    }
+    $assessment   = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table_assessments} WHERE card_id = %d", $card_id ) );
+    $fault_images = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table_faults} WHERE card_id = %d ORDER BY id ASC", $card_id ) );
 
     $grader_name = 'Authorized Grader';
     if ( $assessment && $assessment->grader_id ) {
@@ -666,19 +667,19 @@ function evg_render_pro_qc_review_interface( $card_id, $table_cards, $table_subm
                                 <div class="evg-subgrades-grid">
                                     <div class="evg-subgrade-cell">
                                         <span><?php esc_html_e( 'Centring', 'evg-platform' ); ?></span>
-                                        <strong><?php echo esc_html( $assessment->centreing_score ); ?></strong>
+                                        <strong><?php echo esc_html( intval( $assessment->centreing_score ) ); ?></strong>
                                     </div>
                                     <div class="evg-subgrade-cell">
                                         <span><?php esc_html_e( 'Corners', 'evg-platform' ); ?></span>
-                                        <strong><?php echo esc_html( $assessment->corner_score ); ?></strong>
+                                        <strong><?php echo esc_html( intval( $assessment->corner_score ) ); ?></strong>
                                     </div>
                                     <div class="evg-subgrade-cell">
                                         <span><?php esc_html_e( 'Edges', 'evg-platform' ); ?></span>
-                                        <strong><?php echo esc_html( $assessment->edge_score ); ?></strong>
+                                        <strong><?php echo esc_html( intval( $assessment->edge_score ) ); ?></strong>
                                     </div>
                                     <div class="evg-subgrade-cell">
                                         <span><?php esc_html_e( 'Surface', 'evg-platform' ); ?></span>
-                                        <strong><?php echo esc_html( $assessment->surface_score ); ?></strong>
+                                        <strong><?php echo esc_html( intval( $assessment->surface_score ) ); ?></strong>
                                     </div>
                                 </div>
                             </div>
@@ -720,19 +721,19 @@ function evg_render_pro_qc_review_interface( $card_id, $table_cards, $table_subm
                 <div class="evg-qc-box-body">
                     <div class="evg-checklist-group">
                         <label class="evg-check-item">
-                            <input type="checkbox" required>
+                            <input type="checkbox" name="qc_check_label" required>
                             <span><?php esc_html_e( 'Verified correct card information matches the label exactly.', 'evg-platform' ); ?></span>
                         </label>
                         <label class="evg-check-item">
-                            <input type="checkbox" required>
+                            <input type="checkbox" name="qc_check_grade" required>
                             <span><?php esc_html_e( 'Verified the final grade printed on the label is correct (whole numbers 1-10 only).', 'evg-platform' ); ?></span>
                         </label>
                         <label class="evg-check-item">
-                            <input type="checkbox" required>
+                            <input type="checkbox" name="qc_check_slab" required>
                             <span><?php esc_html_e( 'Verified slab quality (no scratches, dust-free, tamper-evident seals intact).', 'evg-platform' ); ?></span>
                         </label>
                         <label class="evg-check-item">
-                            <input type="checkbox" required>
+                            <input type="checkbox" name="qc_check_standards" required>
                             <span><?php esc_html_e( 'Verified overall presentation meets EVG certification standards.', 'evg-platform' ); ?></span>
                         </label>
 
@@ -750,7 +751,7 @@ function evg_render_pro_qc_review_interface( $card_id, $table_cards, $table_subm
                         <button type="submit" name="qc_action" value="approve" class="evg-btn-approve">
                             🛡️ <?php esc_html_e( 'Pass QC & Authorize Encapsulation', 'evg-platform' ); ?>
                         </button>
-                        <button type="submit" name="qc_action" value="reject" class="evg-btn-reject" formnovalidate onclick="return confirm('<?php esc_attr_e( 'Reject QC check and return card to the Grading Desk?', 'evg-platform' ); ?>');">
+                        <button type="submit" name="qc_action" value="reject" class="evg-btn-reject" formnovalidate onclick="return confirm('<?php echo esc_js( __( 'Reject QC check and return card to the Grading Desk?', 'evg-platform' ) ); ?>');">
                             ✕ <?php esc_html_e( 'Reject & Return to Grading Desk', 'evg-platform' ); ?>
                         </button>
                     </div>

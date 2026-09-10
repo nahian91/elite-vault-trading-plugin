@@ -1,13 +1,13 @@
 <?php
 /**
- * Plugin Name:       Elite Vault Grading - Platform Core
- * Plugin URI:        https://elitevaultgrading.com
- * Description:       Standalone ERP core & internal grading engine for EVG featuring dual-stream customer tracking (Marketplace Orders vs Grading Submissions), 1-10 integer grading, QC desk, stock management, £0.99 portfolio unlock paywall, and public slab verification.
- * Version:           1.4.2
- * Author:            EVG Dev
- * Author URI:        https://elitevaultgrading.com
- * Text Domain:       evg-platform
- * Domain Path:       /languages
+ * Plugin Name:     Elite Vault Grading - Platform Core
+ * Plugin URI:      https://elitevaultgrading.com
+ * Description:     Standalone ERP core & internal grading engine for EVG featuring dual-stream customer tracking (Marketplace Orders vs Grading Submissions), 1-10 integer grading, QC desk, stock management, £0.99 portfolio unlock paywall, and public slab verification.
+ * Version:         1.5.0
+ * Author:          EVG Dev
+ * Author URI:      https://elitevaultgrading.com
+ * Text Domain:     evg-platform
+ * Domain Path:     /languages
  * Requires at least: 6.0
  * Requires PHP:      7.4
  */
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 1. Constants & Path Definitions
  */
-define( 'EVG_CORE_VERSION', '1.4.2' );
+define( 'EVG_CORE_VERSION', '1.5.0' );
 define( 'EVG_CORE_PATH', plugin_dir_path( __FILE__ ) );
 define( 'EVG_CORE_URL', plugin_dir_url( __FILE__ ) );
 define( 'EVG_CORE_BASENAME', plugin_basename( __FILE__ ) );
@@ -83,6 +83,11 @@ final class Elite_Vault_Grading_System {
         register_activation_hook( __FILE__, array( $this, 'execute_database_migration' ) );
         add_action( 'plugins_loaded', array( $this, 'check_plugin_version_upgrades' ) );
 
+        // QR Code Vanity URL Routing
+        add_action( 'init', array( $this, 'register_qr_rewrite_endpoints' ) );
+        add_filter( 'query_vars', array( $this, 'register_qr_query_vars' ) );
+        add_action( 'template_redirect', array( $this, 'handle_cert_qr_scan' ) );
+
         // Enqueue Assets
         add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
         add_action( 'admin_head', array( $this, 'inject_dashboard_white_label_layout' ) );
@@ -104,9 +109,6 @@ final class Elite_Vault_Grading_System {
         // Secure Backend Actions
         add_action( 'admin_post_evg_download_invoice', array( $this, 'handle_invoice_download' ) );
         add_action( 'admin_post_evg_save_fault_previews', array( $this, 'handle_save_fault_previews' ) );
-
-        // Query Vars for Public Verification Endpoint
-        add_filter( 'query_vars', array( $this, 'register_verification_query_vars' ) );
     }
 
     /**
@@ -119,11 +121,35 @@ final class Elite_Vault_Grading_System {
     }
 
     /**
-     * Register Public Slab Verification Query Var (?cert=EVG-XXXXX)
+     * Register Vanity QR Code Scan Query Var
      */
-    public function register_verification_query_vars( $vars ) {
-        $vars[] = 'cert';
+    public function register_qr_query_vars( $vars ) {
+        $vars[] = 'evg_cert_scan';
         return $vars;
+    }
+
+    /**
+     * Register Vanity QR Rewrite Rules
+     */
+    public function register_qr_rewrite_endpoints() {
+        add_rewrite_rule( '^cert/([^/]+)/?', 'index.php?evg_cert_scan=$matches[1]', 'top' );
+    }
+
+    /**
+     * Handle QR Code Scanner Redirection Routing
+     */
+    public function handle_cert_qr_scan() {
+        $cert = get_query_var( 'evg_cert_scan' );
+        if ( ! empty( $cert ) ) {
+            $clean_cert = sanitize_text_field( $cert );
+            if ( is_user_logged_in() ) {
+                wp_safe_redirect( home_url( '/my-account?focus_cert=' . $clean_cert ) );
+            } else {
+                $destination = home_url( '/my-account?focus_cert=' . $clean_cert );
+                wp_safe_redirect( add_query_arg( 'redirect_to', $destination, home_url( '/sign-in' ) ) );
+            }
+            exit;
+        }
     }
 
     /**
@@ -171,24 +197,21 @@ final class Elite_Vault_Grading_System {
 
         check_admin_referer( 'evg_fault_nonce', 'evg_nonce' );
 
-        $card_id = isset( $_POST['card_id'] ) ? intval( $_POST['card_id'] ) : 0;
+        $card_id = isset( $_POST['card_id'] ) ? absint( $_POST['card_id'] ) : 0;
         if ( $card_id <= 0 ) {
             wp_die( esc_html__( 'Invalid Card ID.', 'evg-platform' ), 400 );
         }
 
         global $wpdb;
-        $table_faults = $wpdb->prefix . 'evg_fault_images';
-        $selected_previews = isset( $_POST['free_previews'] ) ? array_map( 'intval', (array) $_POST['free_previews'] ) : array();
+        $table_faults      = $wpdb->prefix . 'evg_fault_images';
+        $selected_previews = isset( $_POST['free_previews'] ) ? array_map( 'absint', (array) $_POST['free_previews'] ) : array();
 
-        // Strict client constraint: Maximum of 3 images can be designated as free previews
         if ( count( $selected_previews ) > 3 ) {
             $selected_previews = array_slice( $selected_previews, 0, 3 );
         }
 
-        // Reset all images for this card to locked/paid (0)
         $wpdb->update( $table_faults, array( 'is_free_preview' => 0 ), array( 'card_id' => $card_id ), array( '%d' ), array( '%d' ) );
 
-        // Mark up to 3 selected IDs as free preview (1)
         if ( ! empty( $selected_previews ) ) {
             $id_placeholders = implode( ',', array_fill( 0, count( $selected_previews ), '%d' ) );
             $wpdb->query( $wpdb->prepare(
@@ -211,7 +234,7 @@ final class Elite_Vault_Grading_System {
             wp_die( esc_html__( 'Access Denied: You do not possess the required privilege level for this module.', 'evg-platform' ), 403 );
         }
 
-        $submission_id = isset( $_GET['submission_id'] ) ? intval( $_GET['submission_id'] ) : 0;
+        $submission_id = isset( $_GET['submission_id'] ) ? absint( $_GET['submission_id'] ) : 0;
         if ( $submission_id <= 0 ) {
             wp_die( esc_html__( 'Invalid Submission ID.', 'evg-platform' ), 400 );
         }
@@ -283,7 +306,7 @@ final class Elite_Vault_Grading_System {
                     <?php endif; ?>
                 </tbody>
             </table>
-            <p class="total">Total Authorized: &pound;<?php echo number_format( $order->total_amount, 2 ); ?> (<?php echo esc_html( $order->payment_status ); ?>)</p>
+            <p class="total">Total Authorized: &pound;<?php echo number_format( (float) $order->total_amount, 2 ); ?> (<?php echo esc_html( $order->payment_status ); ?>)</p>
             <script>window.print();</script>
         </body>
         </html>
@@ -496,7 +519,7 @@ final class Elite_Vault_Grading_System {
             email_address varchar(100) NOT NULL,
             order_number varchar(50) DEFAULT '' NOT NULL,
             feedback_type varchar(50) NOT NULL,
-            rating int(1) NOT NULL,
+            rating tinyint(1) NOT NULL,
             feedback_text text NOT NULL,
             recommend varchar(10) DEFAULT 'Not sure' NOT NULL,
             permission_to_use tinyint(1) DEFAULT 0 NOT NULL,
@@ -523,12 +546,15 @@ final class Elite_Vault_Grading_System {
         ) $charset_collate;";
         dbDelta( $sql_audit );
 
-        // Initialize default option settings if not yet set
+        // Initialize default option settings if not yet set (£9.99 & 5-10 Business Days)
         if ( false === get_option( 'evg_price_standard' ) ) {
             add_option( 'evg_price_standard', 9.99 );
         }
         if ( false === get_option( 'evg_turnaround_time' ) ) {
             add_option( 'evg_turnaround_time', '5-10 Business Days' );
+        }
+        if ( false === get_option( 'evg_portfolio_unlock_fee' ) ) {
+            add_option( 'evg_portfolio_unlock_fee', 0.99 );
         }
 
         // Roles Registration
@@ -576,7 +602,7 @@ final class Elite_Vault_Grading_System {
     }
 
     /**
-     * Data Map Engine for Backend Navigation Modules (Single-Word Labels)
+     * Data Map Engine for Backend Navigation Modules
      */
     public function get_tabs_config() {
         return array(
@@ -746,7 +772,6 @@ final class Elite_Vault_Grading_System {
 
             <div class="evg-right-box">
                 <?php
-                // Dynamic Modular Function Call
                 $callback = 'evg_' . str_replace( '-', '_', $active_tab ) . '_tab';
                 if ( function_exists( $callback ) ) {
                     call_user_func( $callback );
@@ -885,12 +910,12 @@ final class Elite_Vault_Grading_System {
      * Validate Mathematical Captcha on Login
      */
     public function validate_mathematical_captcha( $user, $username, $password ) {
-        if ( is_wp_error( $user ) || 'POST' !== $_SERVER['REQUEST_METHOD'] || empty( $_POST['log'] ) ) { 
+        if ( ! isset( $_POST['log'] ) || 'POST' !== $_SERVER['REQUEST_METHOD'] ) { 
             return $user; 
         }
 
-        $user_answer = isset( $_POST['evg_captcha_answer'] ) ? sanitize_text_field( $_POST['evg_captcha_answer'] ) : '';
-        $token       = isset( $_POST['evg_captcha_token'] ) ? sanitize_text_field( $_POST['evg_captcha_token'] ) : '';
+        $user_answer = isset( $_POST['evg_captcha_answer'] ) ? sanitize_text_field( wp_unslash( $_POST['evg_captcha_answer'] ) ) : '';
+        $token       = isset( $_POST['evg_captcha_token'] ) ? sanitize_text_field( wp_unslash( $_POST['evg_captcha_token'] ) ) : '';
         
         $correct_answer = get_transient( 'evg_captcha_' . $token );
         delete_transient( 'evg_captcha_' . $token );

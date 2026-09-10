@@ -29,18 +29,34 @@ function evg_customers_tab() {
 }
 
 /**
- * Pro ListView: Registered Collectors
+ * Pro ListView: Registered Collectors (SQL-Safe & Dual-Stream Ready)
  */
 function evg_render_pro_customers_list( $table_submissions ) {
     global $wpdb;
 
+    $table_orders = $wpdb->prefix . 'evg_orders';
+
+    // SQL strict-mode compliant customer valuation query combining Submissions and Marketplace orders
     $customers = $wpdb->get_results( "
         SELECT u.ID, u.user_email, u.display_name, u.user_registered,
-               COUNT(s.id) as total_orders,
-               COALESCE(SUM(s.total_amount), 0) as total_spent
+               COALESCE(sub.total_submissions, 0) + COALESCE(ord.total_marketplace_orders, 0) AS total_orders,
+               COALESCE(sub.submission_spend, 0) + COALESCE(ord.marketplace_spend, 0) AS total_spent
         FROM {$wpdb->users} u
-        LEFT JOIN {$table_submissions} s ON u.ID = s.customer_id
-        GROUP BY u.ID
+        LEFT JOIN (
+            SELECT customer_id, 
+                   COUNT(id) AS total_submissions, 
+                   SUM(total_amount) AS submission_spend 
+            FROM {$table_submissions} 
+            GROUP BY customer_id
+        ) sub ON u.ID = sub.customer_id
+        LEFT JOIN (
+            SELECT customer_id, 
+                   COUNT(id) AS total_marketplace_orders, 
+                   SUM(amount_paid) AS marketplace_spend 
+            FROM {$table_orders} 
+            WHERE payment_status = 'Paid'
+            GROUP BY customer_id
+        ) ord ON u.ID = ord.customer_id
         ORDER BY u.user_registered DESC
     " );
     ?>
@@ -252,7 +268,7 @@ function evg_render_pro_customers_list( $table_submissions ) {
                 <tr>
                     <th><?php esc_html_e( 'Collector', 'evg-platform' ); ?></th>
                     <th><?php esc_html_e( 'Joined Date', 'evg-platform' ); ?></th>
-                    <th style="text-align: center;"><?php esc_html_e( 'Submissions', 'evg-platform' ); ?></th>
+                    <th style="text-align: center;"><?php esc_html_e( 'Orders Total', 'evg-platform' ); ?></th>
                     <th><?php esc_html_e( 'Lifetime Value', 'evg-platform' ); ?></th>
                     <th style="text-align: right;"><?php esc_html_e( 'Action', 'evg-platform' ); ?></th>
                 </tr>
@@ -279,7 +295,7 @@ function evg_render_pro_customers_list( $table_submissions ) {
                                 <span class="evg-pill-count"><?php echo esc_html( $customer->total_orders ); ?></span>
                             </td>
                             <td>
-                                <span class="evg-spent-badge">&pound;<?php echo esc_html( number_format( $customer->total_spent, 2 ) ); ?></span>
+                                <span class="evg-spent-badge">&pound;<?php echo esc_html( number_format( (float) $customer->total_spent, 2 ) ); ?></span>
                             </td>
                             <td style="text-align: right;">
                                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_customers&action=view&customer_id=' . $customer->ID ) ); ?>" class="evg-btn-view">
@@ -342,7 +358,7 @@ function evg_render_pro_customer_profile( $customer_id, $table_submissions ) {
     $first_name    = get_user_meta( $customer_id, 'first_name', true );
     $last_name     = get_user_meta( $customer_id, 'last_name', true );
     $website       = $user_info->user_url;
-    $user_roles    = implode( ', ', array_map( 'ucfirst', $user_info->roles ) );
+    $user_roles    = implode( ', ', array_map( 'ucfirst', (array) $user_info->roles ) );
 
     $orders = $wpdb->get_results( $wpdb->prepare( "
         SELECT * FROM {$table_submissions} 
@@ -350,23 +366,25 @@ function evg_render_pro_customer_profile( $customer_id, $table_submissions ) {
         ORDER BY submission_date DESC
     ", $customer_id ) );
 
-    $total_spent   = 0;
+    $total_spent   = 0.00;
     $paid_orders   = 0;
     $active_orders = 0;
     $total_cards   = 0;
 
-    foreach ( $orders as $order ) {
-        if ( 'Paid' === $order->payment_status ) {
-            $total_spent += floatval( $order->total_amount );
-            $paid_orders++;
+    if ( ! empty( $orders ) ) {
+        foreach ( $orders as $order ) {
+            if ( 'Paid' === $order->payment_status ) {
+                $total_spent += floatval( $order->total_amount );
+                $paid_orders++;
+            }
+            if ( ! in_array( $order->current_stage, array( 'Completed', 'Returned To Customer' ), true ) ) {
+                $active_orders++;
+            }
+            $total_cards += intval( $order->total_cards );
         }
-        if ( ! in_array( $order->current_stage, array( 'Completed', 'Returned To Customer' ), true ) ) {
-            $active_orders++;
-        }
-        $total_cards += intval( $order->total_cards );
     }
 
-    $avg_order_value = $paid_orders > 0 ? ( $total_spent / $paid_orders ) : 0;
+    $avg_order_value = $paid_orders > 0 ? ( $total_spent / $paid_orders ) : 0.00;
     ?>
     <style>
         .evg-profile-grid {
@@ -531,7 +549,7 @@ function evg_render_pro_customer_profile( $customer_id, $table_submissions ) {
             <div class="evg-stats-matrix">
                 <div class="evg-stat-cell">
                     <span class="number"><?php echo esc_html( count( $orders ) ); ?></span>
-                    <span class="label"><?php esc_html_e( 'Orders', 'evg-platform' ); ?></span>
+                    <span class="label"><?php esc_html_e( 'Submissions', 'evg-platform' ); ?></span>
                 </div>
                 <div class="evg-stat-cell">
                     <span class="number" style="color: #ff9f0a;"><?php echo esc_html( $active_orders ); ?></span>
@@ -656,7 +674,7 @@ function evg_render_pro_customer_profile( $customer_id, $table_submissions ) {
                                         </span>
                                     </td>
                                     <td style="font-weight: 700;">
-                                        &pound;<?php echo esc_html( number_format( $order->total_amount, 2 ) ); ?>
+                                        &pound;<?php echo esc_html( number_format( (float) $order->total_amount, 2 ) ); ?>
                                     </td>
                                     <td style="text-align: right;">
                                         <a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $order->id ) ); ?>" class="evg-btn-view" style="padding: 5px 12px;">

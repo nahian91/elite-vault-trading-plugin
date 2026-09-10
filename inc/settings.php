@@ -30,18 +30,31 @@ function evg_settings_tab() {
             update_option( 'evg_transparency_enabled', $enable_transparency );
 
             // General Information & Support
-            update_option( 'evg_support_email', sanitize_email( wp_unslash( $_POST['evg_support_email'] ?? '' ) ) );
-            update_option( 'evg_turnaround_time', sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ?? '5-10 Business Days' ) ) );
+            $support_email = isset( $_POST['evg_support_email'] ) ? sanitize_email( wp_unslash( $_POST['evg_support_email'] ) ) : 'support@elitevaultgrading.com';
+            update_option( 'evg_support_email', $support_email );
 
-            // Pricing Configuration Matrix
-            update_option( 'evg_price_standard', floatval( $_POST['evg_price_standard'] ?? 9.99 ) );
-            update_option( 'evg_price_premium_upgrade', floatval( $_POST['evg_price_premium_upgrade'] ?? 0 ) );
-            update_option( 'evg_portfolio_unlock_fee', floatval( $_POST['evg_portfolio_unlock_fee'] ?? 0.99 ) );
+            $turnaround_time = isset( $_POST['evg_turnaround_time'] ) ? sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ) ) : '5-10 Business Days';
+            update_option( 'evg_turnaround_time', $turnaround_time );
+
+            // Pricing Configuration Matrix (Clamped & Normalized)
+            $price_standard = isset( $_POST['evg_price_standard'] ) ? max( 0.00, floatval( $_POST['evg_price_standard'] ) ) : 9.99;
+            update_option( 'evg_price_standard', number_format( $price_standard, 2, '.', '' ) );
+
+            $price_premium = isset( $_POST['evg_price_premium_upgrade'] ) ? max( 0.00, floatval( $_POST['evg_price_premium_upgrade'] ) ) : 2.99;
+            update_option( 'evg_price_premium_upgrade', number_format( $price_premium, 2, '.', '' ) );
+
+            $unlock_fee = isset( $_POST['evg_portfolio_unlock_fee'] ) ? max( 0.00, floatval( $_POST['evg_portfolio_unlock_fee'] ) ) : 0.99;
+            update_option( 'evg_portfolio_unlock_fee', number_format( $unlock_fee, 2, '.', '' ) );
 
             // Additional Configuration Tiers
-            update_option( 'evg_max_cards_per_submission', absint( $_POST['evg_max_cards_per_submission'] ?? 50 ) );
-            update_option( 'evg_return_shipping_fee', floatval( $_POST['evg_return_shipping_fee'] ?? 9.99 ) );
-            update_option( 'evg_announcement_banner', sanitize_text_field( wp_unslash( $_POST['evg_announcement_banner'] ?? '' ) ) );
+            $max_cards = isset( $_POST['evg_max_cards_per_submission'] ) ? max( 1, absint( $_POST['evg_max_cards_per_submission'] ) ) : 50;
+            update_option( 'evg_max_cards_per_submission', $max_cards );
+
+            $shipping_fee = isset( $_POST['evg_return_shipping_fee'] ) ? max( 0.00, floatval( $_POST['evg_return_shipping_fee'] ) ) : 9.99;
+            update_option( 'evg_return_shipping_fee', number_format( $shipping_fee, 2, '.', '' ) );
+
+            $announcement = isset( $_POST['evg_announcement_banner'] ) ? sanitize_text_field( wp_unslash( $_POST['evg_announcement_banner'] ) ) : '';
+            update_option( 'evg_announcement_banner', $announcement );
 
             if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
                 Elite_Vault_Grading_System::log_activity( 'Updated Global Platform & Pricing Settings.' );
@@ -67,7 +80,7 @@ function evg_settings_tab() {
     // ---------------------------------------------------------
     $accept_submissions  = get_option( 'evg_accept_submissions', 'yes' );
     $enable_transparency = get_option( 'evg_transparency_enabled', 'yes' );
-    $support_email       = get_option( 'evg_support_email', 'elitevaultgrading@gmail.com' );
+    $support_email       = get_option( 'evg_support_email', 'support@elitevaultgrading.com' );
     $turnaround_time     = get_option( 'evg_turnaround_time', '5-10 Business Days' );
     $price_standard      = get_option( 'evg_price_standard', '9.99' );
     $price_premium       = get_option( 'evg_price_premium_upgrade', '2.99' );
@@ -269,7 +282,7 @@ function evg_settings_tab() {
         </div>
     </div>
 
-    <form method="post" action="">
+    <form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_settings' ) ); ?>">
         <?php wp_nonce_field( 'evg_save_settings', 'evg_settings_nonce' ); ?>
 
         <div class="evg-settings-grid">
@@ -394,7 +407,7 @@ function evg_settings_tab() {
 
                         <div class="evg-input-group">
                             <label><?php esc_html_e( 'Top Banner Announcement (Optional)', 'evg-platform' ); ?></label>
-                            <input type="text" name="evg_announcement_banner" class="evg-field-control" value="<?php echo esc_attr( $announcement ); ?>" placeholder="e.g. Free return shipping on orders over £150!">
+                            <input type="text" name="evg_announcement_banner" class="evg-field-control" value="<?php echo esc_attr( $announcement ); ?>" placeholder="<?php esc_attr_e( 'e.g. Free return shipping on orders over £150!', 'evg-platform' ); ?>">
                         </div>
                     </div>
                 </div>
