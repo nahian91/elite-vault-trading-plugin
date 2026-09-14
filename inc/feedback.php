@@ -2,7 +2,7 @@
 /**
  * EVG Module: Customer Feedback
  * Manages customer reviews, suggestions, marketing permissions, and featured testimonials.
- * Standard pagination configured to 5 items per page.
+ * Configured to display all feedback entries by default.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -573,7 +573,7 @@ function evg_feedback_tab() {
         jQuery(document).ready(function($) {
             if ($.fn.DataTable && $('.evg-datatable tbody tr').length > 0 && $('.evg-datatable tbody tr td').length > 1) {
                 $('.evg-datatable').DataTable({
-                    "pageLength": 5,
+                    "pageLength": -1, // Displays all feedback records on a single page by default
                     "lengthMenu": [ [5, 10, 25, 50, -1], [5, 10, 25, 50, "All"] ],
                     "order": [[ 0, "desc" ]],
                     "language": {
