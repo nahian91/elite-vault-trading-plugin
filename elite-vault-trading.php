@@ -266,7 +266,7 @@ final class Elite_Vault_Grading_System {
             <div class="invoice-header">
                 <div>
                     <h1 class="gold-title">ELITE VAULT GRADING</h1>
-                    <p>support@elitevaultgrading.com | www.elitevaultgrading.com</p>
+                    <p>info@elitevaultgrading.com | www.elitevaultgrading.com</p>
                 </div>
                 <div style="text-align: right;">
                     <h2>GRADING PACKING MANIFEST</h2>
@@ -737,18 +737,18 @@ final class Elite_Vault_Grading_System {
             <?php if ( ! $is_print_mode ) : ?>
                 <div class="evg-sidebar-container">
                     
-                    <div class="evg-author-profile">
-                        <div class="profile-avatar">
-                            <?php 
-                            $default_avatar_url = EVG_CORE_URL . 'assets/img/evg-logo.png'; 
-                            echo '<img src="' . esc_url( $default_avatar_url ) . '" alt="' . esc_attr( $display_name ) . '" width="52" height="52" />'; 
-                            ?>
-                        </div>
-                        <div class="profile-meta">
-                            <h4 class="profile-name"><?php echo esc_html( $display_name ); ?></h4>
-                            <span class="profile-designation"><?php echo esc_html( str_replace( '_', ' ', $designation ) ); ?></span>
-                        </div>
-                    </div>
+                   <div class="evg-author-profile">
+    <div class="profile-avatar"> 
+        <?php 
+        $avatar_url = 'https://elitevaultgrading.com/wp-content/uploads/2026/09/logo-1.png';
+        echo '<img src="' . esc_url( $avatar_url ) . '" alt="' . esc_attr( $display_name ) . '" width="52" height="52" />'; 
+        ?>
+    </div>
+    <div class="profile-meta">
+        <h4 class="profile-name"><?php echo esc_html( $display_name ); ?></h4>
+        <span class="profile-designation"><?php echo esc_html( str_replace( '_', ' ', $designation ) ); ?></span>
+    </div>
+</div>
 
                     <ul class="evg-left-tabs">
                         <?php 

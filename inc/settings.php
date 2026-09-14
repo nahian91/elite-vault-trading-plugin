@@ -30,7 +30,7 @@ function evg_settings_tab() {
             update_option( 'evg_transparency_enabled', $enable_transparency );
 
             // General Information & Support
-            $support_email = isset( $_POST['evg_support_email'] ) ? sanitize_email( wp_unslash( $_POST['evg_support_email'] ) ) : 'support@elitevaultgrading.com';
+            $support_email = isset( $_POST['evg_support_email'] ) ? sanitize_email( wp_unslash( $_POST['evg_support_email'] ) ) : 'info@elitevaultgrading.com';
             update_option( 'evg_support_email', $support_email );
 
             $turnaround_time = isset( $_POST['evg_turnaround_time'] ) ? sanitize_text_field( wp_unslash( $_POST['evg_turnaround_time'] ) ) : '5-10 Business Days';
@@ -80,7 +80,7 @@ function evg_settings_tab() {
     // ---------------------------------------------------------
     $accept_submissions  = get_option( 'evg_accept_submissions', 'yes' );
     $enable_transparency = get_option( 'evg_transparency_enabled', 'yes' );
-    $support_email       = get_option( 'evg_support_email', 'support@elitevaultgrading.com' );
+    $support_email       = get_option( 'evg_support_email', 'info@elitevaultgrading.com' );
     $turnaround_time     = get_option( 'evg_turnaround_time', '5-10 Business Days' );
     $price_standard      = get_option( 'evg_price_standard', '9.99' );
     $price_premium       = get_option( 'evg_price_premium_upgrade', '2.99' );
