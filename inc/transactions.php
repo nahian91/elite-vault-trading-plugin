@@ -1,0 +1,520 @@
+<?php
+/**
+ * EVG Module: Payments & Billing (Pro Edition)
+ * Revenue telemetry, billing reconciliation, transaction tracking, and refund processing.
+ * Standard pagination configured to 5 items per page.
+ *
+ * @package EliteVaultGradingCore
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+/**
+ * Handle early POST transaction actions (Redirect-safe on admin_init).
+ */
+add_action( 'admin_init', 'evg_handle_transactions_actions' );
+
+function evg_handle_transactions_actions() {
+	if ( ! is_admin() || ! isset( $_GET['page'] ) || 'evg_tab_transactions' !== $_GET['page'] ) {
+		return;
+	}
+
+	if ( ! Elite_Vault_Grading_System::has_access( array( 'administrator', 'support_team' ) ) ) {
+		return;
+	}
+
+	global $wpdb;
+	$evg_table_submissions = $wpdb->prefix . 'evg_submissions';
+
+	// ---------------------------------------------------------
+	// Handle Form Submissions (Update Transaction Status)
+	// ---------------------------------------------------------
+	if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['evg_payment_nonce'] ) ) {
+		if ( wp_verify_nonce( sanitize_key( wp_unslash( $_POST['evg_payment_nonce'] ) ), 'evg_update_payment' ) ) {
+
+			$evg_sub_id         = isset( $_POST['submission_id'] ) ? absint( $_POST['submission_id'] ) : 0;
+			$evg_raw_status     = isset( $_POST['payment_status'] ) ? sanitize_text_field( wp_unslash( $_POST['payment_status'] ) ) : 'Pending';
+			$evg_allowed_status = array( 'Pending', 'Paid', 'Partial Refund', 'Refunded', 'Failed' );
+			$evg_payment_status = in_array( $evg_raw_status, $evg_allowed_status, true ) ? $evg_raw_status : 'Pending';
+
+			if ( $evg_sub_id > 0 ) {
+				$wpdb->update(
+					$evg_table_submissions,
+					array( 'payment_status' => $evg_payment_status ),
+					array( 'id' => $evg_sub_id ),
+					array( '%s' ),
+					array( '%d' )
+				);
+
+				if ( class_exists( 'Elite_Vault_Grading_System' ) && method_exists( 'Elite_Vault_Grading_System', 'log_activity' ) ) {
+					Elite_Vault_Grading_System::log_activity( "Updated Payment Status for Order ID {$evg_sub_id} to: {$evg_payment_status}" );
+				}
+			}
+
+			evg_transactions_safe_redirect( admin_url( 'admin.php?page=evg_tab_transactions&tx_updated=1' ) );
+		}
+	}
+}
+
+/**
+ * Universal redirect helper.
+ *
+ * @param string $location Destination URL.
+ */
+function evg_transactions_safe_redirect( $location ) {
+	if ( ! headers_sent() ) {
+		wp_safe_redirect( $location );
+		exit;
+	} else {
+		echo '<script type="text/javascript">window.location.href="' . esc_url_raw( $location ) . '";</script>';
+		echo '<noscript><meta http-equiv="refresh" content="0;url=' . esc_url( $location ) . '"></noscript>';
+		exit;
+	}
+}
+
+/**
+ * Render function for the Payments & Billing tab.
+ */
+function evg_transactions_tab() {
+	if ( ! Elite_Vault_Grading_System::has_access( array( 'administrator', 'support_team' ) ) ) {
+		echo '<div class="notice notice-error"><p>' . esc_html__( 'Access Denied: You do not have permission to view Payments & Billing.', 'evg' ) . '</p></div>';
+		return;
+	}
+
+	global $wpdb;
+
+	$evg_table_submissions = $wpdb->prefix . 'evg_submissions';
+	$evg_table_orders      = $wpdb->prefix . 'evg_orders';
+	$evg_table_unlocks     = $wpdb->prefix . 'evg_portfolio_unlocks';
+
+	// phpcs:disable WordPress.Security.NonceVerification.Recommended
+	if ( isset( $_GET['tx_updated'] ) ) {
+		echo '<div class="notice notice-success is-dismissible" style="background:#141416; border-left:4px solid #d4af37; color:#fff; padding:12px 16px; margin-bottom:20px; border-radius:6px;"><p style="margin:0; font-weight:600;">' . esc_html__( 'Transaction record updated successfully.', 'evg' ) . '</p></div>';
+	}
+	// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+	// ---------------------------------------------------------
+	// Fetch Submissions Ledger
+	// ---------------------------------------------------------
+	// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$evg_transactions = $wpdb->get_results(
+		"SELECT s.id, s.order_number, s.submission_date, s.total_amount, s.payment_status, s.current_stage, s.total_cards, s.service_type, u.display_name, u.user_email 
+		FROM {$evg_table_submissions} s
+		LEFT JOIN {$wpdb->users} u ON s.customer_id = u.ID
+		ORDER BY s.id DESC"
+	);
+
+	// ---------------------------------------------------------
+	// Compute Financial Metrics Across Entire Platform
+	// ---------------------------------------------------------
+	// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$evg_sub_revenue   = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$evg_table_submissions} WHERE payment_status = 'Paid'" );
+	$evg_mkt_revenue   = (float) $wpdb->get_var( "SELECT COALESCE(SUM(amount_paid), 0) FROM {$evg_table_orders} WHERE payment_status = 'Paid'" );
+	$evg_paywall_rev   = (float) $wpdb->get_var( "SELECT COALESCE(SUM(amount_paid), 0) FROM {$evg_table_unlocks} WHERE payment_status = 'Completed'" );
+	$evg_total_revenue = $evg_sub_revenue + $evg_mkt_revenue + $evg_paywall_rev;
+
+	$evg_total_pending  = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$evg_table_submissions} WHERE payment_status = 'Pending'" );
+	$evg_total_refunded = (float) $wpdb->get_var( "SELECT COALESCE(SUM(total_amount), 0) FROM {$evg_table_submissions} WHERE payment_status IN ('Refunded', 'Partial Refund')" );
+	// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	?>
+
+	<style>
+		:root {
+			--evg-gold: #d4af37;
+			--evg-gold-light: #f3e5ab;
+			--evg-border: #222224;
+			--evg-bg-card: #0f0f11;
+			--evg-text-muted: #8e8e93;
+		}
+
+		.evg-tx-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 28px;
+			flex-wrap: wrap;
+			gap: 15px;
+		}
+		.evg-tx-header h1 {
+			font-size: 26px;
+			font-weight: 800;
+			margin: 0 0 6px 0;
+			color: #ffffff;
+			letter-spacing: -0.5px;
+		}
+		.evg-tx-header p {
+			color: var(--evg-text-muted);
+			font-size: 13px;
+			margin: 0;
+		}
+
+		.evg-stat-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+			gap: 18px;
+			margin-bottom: 28px;
+		}
+		.evg-stat-box {
+			background: #0f0f0f;
+			border: 1px solid #222222;
+			border-radius: 12px;
+			padding: 20px;
+			display: flex;
+			align-items: center;
+			gap: 16px;
+			box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+			transition: transform 0.2s ease, border-color 0.2s ease;
+		}
+		.evg-stat-box:hover {
+			transform: translateY(-2px);
+			border-color: #d4af37;
+		}
+		.evg-stat-icon-wrap {
+			width: 46px;
+			height: 46px;
+			border-radius: 10px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			flex-shrink: 0;
+		}
+		.evg-stat-icon-wrap svg {
+			width: 22px;
+			height: 22px;
+		}
+		.evg-stat-content h3 {
+			font-size: 24px;
+			font-weight: 800;
+			margin: 0 0 2px 0;
+			line-height: 1;
+		}
+		.evg-stat-content p {
+			font-size: 11px;
+			color: #8e8e93;
+			margin: 0;
+			text-transform: uppercase;
+			letter-spacing: 0.6px;
+			font-weight: 600;
+		}
+
+		.evg-panel-shell {
+			background: var(--evg-bg-card);
+			border: 1px solid var(--evg-border);
+			border-radius: 14px;
+			overflow-x: auto;
+			box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+		}
+
+		.evg-tx-table {
+			width: 100%;
+			border-collapse: separate;
+			border-spacing: 0;
+		}
+		.evg-tx-table thead th {
+			background: #141416;
+			color: var(--evg-text-muted);
+			font-size: 11px;
+			font-weight: 700;
+			text-transform: uppercase;
+			letter-spacing: 0.8px;
+			padding: 16px 20px;
+			border-bottom: 1px solid var(--evg-border);
+			text-align: left;
+			white-space: nowrap;
+		}
+		.evg-tx-table tbody td {
+			padding: 16px 20px;
+			border-bottom: 1px solid #1a1a1d;
+			color: #ffffff;
+			font-size: 13px;
+			vertical-align: middle;
+		}
+		.evg-tx-table tbody tr {
+			transition: background 0.2s ease;
+		}
+		.evg-tx-table tbody tr:hover {
+			background: rgba(212, 175, 55, 0.02);
+		}
+		.evg-tx-table tbody tr:last-child td {
+			border-bottom: none;
+		}
+
+		.evg-stage-chip {
+			display: inline-block;
+			background: #18181a;
+			border: 1px solid #2c2c2e;
+			color: #ffffff;
+			font-size: 11px;
+			font-weight: 700;
+			padding: 3px 8px;
+			border-radius: 4px;
+			white-space: nowrap;
+		}
+
+		.evg-pay-status {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			font-weight: 700;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+		}
+		.evg-pay-Paid { color: #34c759; }
+		.evg-pay-Pending { color: #ff9f0a; }
+		.evg-pay-Refunded { color: #ff453a; }
+		.evg-pay-Partial { color: #0a84ff; }
+		.evg-pay-Failed { color: #ff453a; }
+
+		.evg-select-control {
+			background: #141416;
+			border: 1px solid #28282b;
+			color: #ffffff;
+			padding: 6px 10px;
+			font-size: 12px;
+			border-radius: 6px;
+			outline: none;
+			transition: border-color 0.2s ease;
+		}
+		.evg-select-control:focus {
+			border-color: #d4af37;
+		}
+
+		.evg-btn-save-sm {
+			background: var(--evg-gold);
+			color: #0a0a0a;
+			padding: 6px 12px;
+			font-size: 11px;
+			font-weight: 800;
+			border-radius: 6px;
+			border: none;
+			cursor: pointer;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			transition: all 0.2s ease;
+		}
+		.evg-btn-save-sm:hover {
+			background: #f3e5ab;
+		}
+
+		.evg-btn-pdf-link {
+			border: 1px solid var(--evg-border);
+			color: #8e8e93;
+			padding: 5px 8px;
+			font-size: 12px;
+			border-radius: 6px;
+			text-decoration: none;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			transition: all 0.2s ease;
+		}
+		.evg-btn-pdf-link:hover {
+			border-color: var(--evg-gold);
+			color: var(--evg-gold);
+		}
+
+		/* Custom DataTables Pagination Styling */
+		.dataTables_wrapper .dataTables_paginate {
+			display: flex;
+			align-items: center;
+			justify-content: flex-end;
+			gap: 4px;
+			padding: 15px 20px;
+		}
+		.dataTables_wrapper .dataTables_paginate .paginate_button {
+			background: #141416 !important;
+			border: 1px solid #28282b !important;
+			color: #8e8e93 !important;
+			border-radius: 6px !important;
+			padding: 5px 12px !important;
+			font-size: 12px !important;
+			font-family: monospace !important;
+			font-weight: 700 !important;
+			cursor: pointer !important;
+			transition: all 0.2s ease !important;
+		}
+		.dataTables_wrapper .dataTables_paginate .paginate_button.current,
+		.dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+			background: var(--evg-gold) !important;
+			color: #0a0a0a !important;
+			border-color: var(--evg-gold) !important;
+		}
+		.dataTables_wrapper .dataTables_paginate .paginate_button.disabled,
+		.dataTables_wrapper .dataTables_paginate .paginate_button.disabled:hover {
+			background: #101012 !important;
+			border-color: #1f1f23 !important;
+			color: #444449 !important;
+			cursor: not-allowed !important;
+		}
+		.dataTables_wrapper .dataTables_length,
+		.dataTables_wrapper .dataTables_filter,
+		.dataTables_wrapper .dataTables_info {
+			padding: 15px 20px;
+			color: var(--evg-text-muted);
+			font-size: 12px;
+		}
+		.dataTables_wrapper .dataTables_filter input,
+		.dataTables_wrapper .dataTables_length select {
+			background: #141416;
+			border: 1px solid #28282b;
+			color: #ffffff;
+			border-radius: 4px;
+			padding: 5px 10px;
+			outline: none;
+		}
+		.dataTables_wrapper .dataTables_filter input:focus,
+		.dataTables_wrapper .dataTables_length select:focus {
+			border-color: var(--evg-gold);
+		}
+	</style>
+
+	<div class="evg-tx-header">
+		<div>
+			<h1><?php esc_html_e( 'Billing', 'evg' ); ?></h1>
+			<p><?php esc_html_e( 'Audit transaction statuses, balance reconciliations, customer invoices, and refund workflows.', 'evg' ); ?></p>
+		</div>
+		<div style="font-size: 12px; color: var(--evg-text-muted); font-family: monospace;">
+			<?php
+			printf(
+				/* translators: %s: Formatted total count of transactions */
+				esc_html__( '%s Transactions Recorded', 'evg' ),
+				esc_html( number_format_i18n( count( $evg_transactions ) ) )
+			);
+			?>
+		</div>
+	</div>
+
+	<!-- Financial Matrix -->
+	<div class="evg-stat-grid">
+		<div class="evg-stat-box">
+			<div class="evg-stat-icon-wrap" style="background: rgba(52, 199, 89, 0.08); border: 1px solid rgba(52, 199, 89, 0.25);">
+				<svg style="fill: #34c759;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><path d="M160 0c17.7 0 32 14.3 32 32V67.7c1.6 .2 3.1 .4 4.7 .7c.4 .1 .9 .1 1.3 .2l10.1 2.8c58.6 16 104.1 70.1 106 130.5c.3 11-8.4 20.3-19.5 20.3H253.2c-10.4 0-19.1-8-19.8-18.4c-1.3-19.4-12.8-35.8-31.5-44.4c-11.8-5.5-25.2-7.5-38.3-5.6C153 155.3 144 163.6 144 174.1c0 9.2 6.1 17.3 14.9 20l25.8 7.7c33.3 10 63.3 27.5 87 50.9c25.4 25.1 40.3 59.9 40.3 97.4c0 62.5-43.7 114.9-104 126.9V512c0 17.7-14.3 32-32 32s-32-14.3-32-32V444.3c-1.6-.2-3.1-.4-4.7-.7c-.4-.1-.9-.1-1.3-.2l-10.1-2.8c-58.6-16-104.1-70.1-106-130.5c-.3-11 8.4-20.3 19.5-20.3H81.2c10.4 0 19.1 8 19.8 18.4c1.3 19.4 12.8 35.8 31.5 44.4c11.8 5.5 25.2 7.5 38.3 5.6C181.4 356.7 190.4 348.4 190.4 338c0-9.2-6.1-17.3-14.9-20l-25.8-7.7C116.3 300.3 86.4 282.8 62.6 259.4C37.2 234.3 22.4 199.5 22.4 162c0-62.5 43.7-114.9 104-126.9V32c0-17.7 14.3-32 32-32z"/></svg>
+			</div>
+			<div class="evg-stat-content">
+				<h3 style="color: #34c759;">&pound;<?php echo esc_html( number_format_i18n( (float) $evg_total_revenue, 2 ) ); ?></h3>
+				<p><?php esc_html_e( 'Settled Revenue', 'evg' ); ?></p>
+			</div>
+		</div>
+
+		<div class="evg-stat-box">
+			<div class="evg-stat-icon-wrap" style="background: rgba(255, 159, 10, 0.08); border: 1px solid rgba(255, 159, 10, 0.25);">
+				<svg style="fill: #ff9f0a;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M256 0a256 256 0 1 1 0 512A256 256 0 1 1 256 0zM232 120V256c0 8 4 15.5 10.7 20l96 64c11 7.4 25.9 4.4 33.3-6.7s4.4-25.9-6.7-33.3L280 243.2V120c0-13.3-10.7-24-24-24s-24 10.7-24 24z"/></svg>
+			</div>
+			<div class="evg-stat-content">
+				<h3 style="color: #ff9f0a;">&pound;<?php echo esc_html( number_format_i18n( (float) $evg_total_pending, 2 ) ); ?></h3>
+				<p><?php esc_html_e( 'Pending Invoices', 'evg' ); ?></p>
+			</div>
+		</div>
+
+		<div class="evg-stat-box">
+			<div class="evg-stat-icon-wrap" style="background: rgba(255, 69, 58, 0.08); border: 1px solid rgba(255, 69, 58, 0.25);">
+				<svg style="fill: #ff453a;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M48.5 224H40c-13.3 0-24-10.7-24-24V72c0-9.7 5.8-18.5 14.8-22.2s19.3-1.7 26.2 5.2L98.6 96.6c87.6-86.5 228.7-86.2 315.8 1c87.5 87.5 87.5 229.3 0 316.8s-229.3 87.5-316.8 0c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0c62.5 62.5 163.8 62.5 226.3 0s62.5-163.8 0-226.3c-62.2-62.2-162.7-62.5-225.3-1L185 183c6.9 6.9 8.9 17.2 5.2 26.2s-12.5 14.8-22.2 14.8H48.5z"/></svg>
+			</div>
+			<div class="evg-stat-content">
+				<h3 style="color: #ff453a;">&pound;<?php echo esc_html( number_format_i18n( (float) $evg_total_refunded, 2 ) ); ?></h3>
+				<p><?php esc_html_e( 'Total Refunded', 'evg' ); ?></p>
+			</div>
+		</div>
+	</div>
+
+	<!-- Transactions Data Table -->
+	<div class="evg-panel-shell">
+		<table class="evg-tx-table evg-tx-datatable">
+			<thead>
+				<tr>
+					<th><?php esc_html_e( 'Order Ref', 'evg' ); ?></th>
+					<th><?php esc_html_e( 'Collector Details', 'evg' ); ?></th>
+					<th><?php esc_html_e( 'Date Created', 'evg' ); ?></th>
+					<th><?php esc_html_e( 'Pipeline Stage', 'evg' ); ?></th>
+					<th><?php esc_html_e( 'Total Billed', 'evg' ); ?></th>
+					<th><?php esc_html_e( 'Settlement Status', 'evg' ); ?></th>
+					<th style="text-align: right;"><?php esc_html_e( 'Billing Controls', 'evg' ); ?></th>
+				</tr>
+			</thead>
+			<tbody>
+				<?php if ( ! empty( $evg_transactions ) ) : ?>
+					<?php foreach ( $evg_transactions as $tx ) : 
+						$evg_pay_class = 'evg-pay-' . ( false !== strpos( $tx->payment_status, 'Partial' ) ? 'Partial' : $tx->payment_status );
+						$evg_timestamp = strtotime( $tx->submission_date );
+					?>
+						<tr>
+							<td>
+								<a href="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_submissions&action=view&id=' . $tx->id ) ); ?>" style="font-family: monospace; font-weight: 700; color: var(--evg-gold); text-decoration: none;">
+									#<?php echo esc_html( $tx->order_number ); ?>
+								</a>
+							</td>
+							<td>
+								<strong style="color: #ffffff;"><?php echo esc_html( $tx->display_name ? $tx->display_name : __( 'Guest', 'evg' ) ); ?></strong><br>
+								<span style="color: var(--evg-text-muted); font-size: 12px;"><?php echo esc_html( $tx->user_email ); ?></span>
+							</td>
+							<td data-order="<?php echo esc_attr( $evg_timestamp ); ?>" style="color: var(--evg-text-muted); font-size: 12px;">
+								<?php echo esc_html( date_i18n( 'M j, Y', $evg_timestamp ) ); ?>
+							</td>
+							<td>
+								<span class="evg-stage-chip"><?php echo esc_html( $tx->current_stage ); ?></span>
+							</td>
+							<td>
+								<strong style="color: #ffffff; font-size: 14px;">&pound;<?php echo esc_html( number_format_i18n( (float) $tx->total_amount, 2 ) ); ?></strong>
+							</td>
+							<td>
+								<span class="evg-pay-status <?php echo esc_attr( $evg_pay_class ); ?>">
+									&bull; <?php echo esc_html( $tx->payment_status ); ?>
+								</span>
+							</td>
+							<td style="text-align: right;">
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=evg_tab_transactions' ) ); ?>" style="display: inline-flex; gap: 6px; align-items: center; margin: 0;">
+									<?php wp_nonce_field( 'evg_update_payment', 'evg_payment_nonce' ); ?>
+									<input type="hidden" name="submission_id" value="<?php echo esc_attr( $tx->id ); ?>">
+									<select name="payment_status" class="evg-select-control">
+										<option value="Pending" <?php selected( $tx->payment_status, 'Pending' ); ?>><?php esc_html_e( 'Pending', 'evg' ); ?></option>
+										<option value="Paid" <?php selected( $tx->payment_status, 'Paid' ); ?>><?php esc_html_e( 'Paid', 'evg' ); ?></option>
+										<option value="Partial Refund" <?php selected( $tx->payment_status, 'Partial Refund' ); ?>><?php esc_html_e( 'Partial Refund', 'evg' ); ?></option>
+										<option value="Refunded" <?php selected( $tx->payment_status, 'Refunded' ); ?>><?php esc_html_e( 'Refunded', 'evg' ); ?></option>
+										<option value="Failed" <?php selected( $tx->payment_status, 'Failed' ); ?>><?php esc_html_e( 'Failed', 'evg' ); ?></option>
+									</select>
+									<button type="submit" class="evg-btn-save-sm">
+										<?php esc_html_e( 'Save', 'evg' ); ?>
+									</button>
+									<a href="<?php echo esc_url( admin_url( 'admin-post.php?action=evg_download_invoice&submission_id=' . $tx->id ) ); ?>" target="_blank" rel="noopener noreferrer" class="evg-btn-pdf-link" title="<?php esc_attr_e( 'Download Invoice PDF', 'evg' ); ?>">
+										&#128196;
+									</a>
+								</form>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				<?php else : ?>
+					<tr>
+						<td colspan="7" style="text-align: center; color: var(--evg-text-muted); padding: 50px;">
+							<?php esc_html_e( 'No financial transactions logged in system.', 'evg' ); ?>
+						</td>
+					</tr>
+				<?php endif; ?>
+			</tbody>
+		</table>
+	</div>
+
+	<script>
+		jQuery(document).ready(function($) {
+			if ($.fn.DataTable && $('.evg-tx-datatable tbody tr').length > 0 && $('.evg-tx-datatable tbody tr td').length > 1) {
+				$('.evg-tx-datatable').DataTable({
+					"pageLength": 10,
+					"lengthMenu": [ [10, 25, 50, 100, -1], [10, 25, 50, 100, "All"] ],
+					"order": [[ 2, "desc" ]],
+					"language": {
+						"search": "<?php echo esc_js( __( 'Search Transactions:', 'evg' ) ); ?>",
+						"lengthMenu": "<?php echo esc_js( __( 'Display _MENU_ transactions per page', 'evg' ) ); ?>",
+						"info": "<?php echo esc_js( __( 'Showing _START_ to _END_ of _TOTAL_ financial records', 'evg' ) ); ?>",
+						"paginate": {
+							"previous": "<?php echo esc_js( __( '← Prev', 'evg' ) ); ?>",
+							"next": "<?php echo esc_js( __( 'Next →', 'evg' ) ); ?>"
+						}
+					}
+				});
+			}
+		});
+	</script>
+	<?php
+}
